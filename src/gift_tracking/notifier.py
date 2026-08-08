@@ -272,6 +272,11 @@ class BotNotifier:
                 else:
                     description = parsed.get("description")
                     if description:
+                        if (
+                            method == "editMessageText"
+                            and "message is not modified" in description.casefold()
+                        ):
+                            return {}
                         details = f"{details}: {description}"
                     else:
                         details = f"{details}: {parsed}"

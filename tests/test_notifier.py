@@ -87,6 +87,23 @@ class NotifierTests(unittest.TestCase):
             ):
                 notifier._call("sendMessage", {"chat_id": "1", "text": "x"})
 
+    def test_edit_message_not_modified_is_ignored(self) -> None:
+        notifier = BotNotifier("token", "1", "Europe/Minsk")
+        error = urllib.error.HTTPError(
+            url="https://api.telegram.org",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=BytesIO(
+                b'{"ok":false,"error_code":400,"description":"Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message"}'
+            ),
+        )
+        with patch("urllib.request.urlopen", side_effect=error):
+            self.assertEqual(
+                notifier._call("editMessageText", {"chat_id": "1", "message_id": 1}),
+                {},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
