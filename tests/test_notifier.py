@@ -1,6 +1,8 @@
 import unittest
 from datetime import UTC, datetime
+from io import BytesIO
 from unittest.mock import patch
+import urllib.error
 
 from gift_tracking.models import Attribute, GiftEvent
 from gift_tracking.notifier import BotLongPollTimeout, BotNotifier, FilterMenuState, format_notification
@@ -67,6 +69,23 @@ class NotifierTests(unittest.TestCase):
                 import asyncio
 
                 asyncio.run(notifier.get_updates())
+
+    def test_http_error_includes_bot_api_description(self) -> None:
+        notifier = BotNotifier("token", "1", "Europe/Minsk")
+        error = urllib.error.HTTPError(
+            url="https://api.telegram.org",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=BytesIO(
+                b'{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}'
+            ),
+        )
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaisesRegex(
+                Exception, "Bad Request: chat not found"
+            ):
+                notifier._call("sendMessage", {"chat_id": "1", "text": "x"})
 
 
 if __name__ == "__main__":

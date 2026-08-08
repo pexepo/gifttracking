@@ -155,7 +155,7 @@ class BotNotifier:
         )
 
     async def get_updates(self, timeout: int = 30) -> list[dict[str, object]]:
-        payload = {"timeout": timeout, "allowed_updates": ["message", "callback_query"]}
+        payload = {"timeout": timeout}
         if self._update_offset:
             payload["offset"] = self._update_offset
         result = await asyncio.to_thread(self._call, "getUpdates", payload, timeout + 10)
@@ -258,6 +258,24 @@ class BotNotifier:
             if method == "getUpdates":
                 raise BotLongPollTimeout("Long poll timeout") from exc
             raise NotificationError(f"Ошибка Bot API: {exc}") from exc
+        except urllib.error.HTTPError as exc:
+            details = str(exc)
+            try:
+                error_body = exc.read().decode("utf-8")
+            except Exception:
+                error_body = ""
+            if error_body:
+                try:
+                    parsed = json.loads(error_body)
+                except json.JSONDecodeError:
+                    details = f"{details}: {error_body}"
+                else:
+                    description = parsed.get("description")
+                    if description:
+                        details = f"{details}: {description}"
+                    else:
+                        details = f"{details}: {parsed}"
+            raise NotificationError(f"Ошибка Bot API: {details}") from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise NotificationError(f"Ошибка Bot API: {exc}") from exc
         if not body.get("ok"):
