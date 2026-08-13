@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .models import GiftEvent
+from .models import GiftEvent, MarketPrice, PriceInfo
 
 ATTRIBUTE_LABELS = {
     "model": "Модель",
@@ -63,6 +63,45 @@ def format_notification(event: GiftEvent, timezone: str) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def attribute_value(event: GiftEvent, kind: str) -> str:
+    for attribute in event.attributes:
+        if attribute.kind == kind:
+            return attribute.name
+    return "—"
+
+
+def format_price(price: PriceInfo | None) -> str:
+    if price is None or not price.markets:
+        return "по запросу"
+    parts: list[str] = []
+    for market in price.markets:
+        value = ""
+        if market.price_ton is not None:
+            value = f"{market.price_ton:g} TON"
+        elif market.price_stars is not None:
+            value = f"{market.price_stars:g} ⭐"
+        if value:
+            parts.append(f"{market.market}: {value}")
+    return "; ".join(parts) if parts else "по запросу"
+
+
+def render_owner_message(
+    template: str, event: GiftEvent, price: PriceInfo | None
+) -> str:
+    replacements = {
+        "{title}": event.title,
+        "{number}": str(event.number),
+        "{model}": attribute_value(event, "model"),
+        "{backdrop}": attribute_value(event, "backdrop"),
+        "{price}": format_price(price),
+        "{link}": event.link,
+    }
+    result = template
+    for placeholder, value in replacements.items():
+        result = result.replace(placeholder, value)
+    return result
 
 
 class BotNotifier:

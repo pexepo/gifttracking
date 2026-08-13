@@ -105,5 +105,78 @@ class NotifierTests(unittest.TestCase):
             )
 
 
+from gift_tracking.models import GiftEvent, MarketPrice, PriceInfo
+from gift_tracking.notifier import format_price, render_owner_message
+
+
+class TemplateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.event = GiftEvent(
+            slug="PlushPepe-2826",
+            gift_id=1,
+            title="Plush Pepe",
+            number=2826,
+            link="https://t.me/nft/PlushPepe-2826",
+            owner_name="Owner",
+            owner_username=None,
+            owner_address=None,
+            attributes=(
+                Attribute("model", "Spectrum", "3%"),
+                Attribute("backdrop", "Coral Red", "1.5%"),
+                Attribute("symbol", "Star", "0.4%"),
+            ),
+            availability_issued=2826,
+            availability_total=2861,
+            detected_at=datetime.now(UTC),
+            owner_user_id=42,
+        )
+
+    def test_renders_all_placeholders(self) -> None:
+        price = PriceInfo(
+            collection="Plush Pepe",
+            model="Spectrum",
+            backdrop="Coral Red",
+            markets=(MarketPrice("Tonnel", price_ton=12.5),),
+            fetched_at=datetime.now(UTC),
+        )
+        text = render_owner_message(
+            "Куплю {title} #{number} ({model}/{backdrop}) за {price}: {link}",
+            self.event,
+            price,
+        )
+        self.assertIn("Куплю Plush Pepe #2826", text)
+        self.assertIn("(Spectrum/Coral Red)", text)
+        self.assertIn("12.5 TON", text)
+        self.assertIn("https://t.me/nft/PlushPepe-2826", text)
+
+    def test_renders_without_price(self) -> None:
+        text = render_owner_message("Цена: {price}", self.event, None)
+        self.assertEqual(text, "Цена: по запросу")
+
+    def test_unknown_placeholders_are_left_alone(self) -> None:
+        text = render_owner_message("Привет {wat}", self.event, None)
+        self.assertEqual(text, "Привет {wat}")
+
+
+class FormatPriceTests(unittest.TestCase):
+    def test_join_markets(self) -> None:
+        price = PriceInfo(
+            collection="X",
+            model="Y",
+            backdrop="Z",
+            markets=(
+                MarketPrice("Tonnel", price_ton=12.5),
+                MarketPrice("MRKT", price_stars=950.0),
+            ),
+            fetched_at=datetime.now(UTC),
+        )
+        text = format_price(price)
+        self.assertIn("Tonnel: 12.5 TON", text)
+        self.assertIn("MRKT: 950 ⭐", text)
+
+    def test_none(self) -> None:
+        self.assertEqual(format_price(None), "по запросу")
+
+
 if __name__ == "__main__":
     unittest.main()
