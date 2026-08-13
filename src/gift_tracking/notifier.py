@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .models import GiftEvent, MarketPrice, PriceInfo
+from .models import GiftEvent, MarketPrice, MenuSettings, PriceInfo
 
 ATTRIBUTE_LABELS = {
     "model": "Модель",
@@ -274,6 +274,161 @@ class BotNotifier:
         )
         keyboard.append([{"text": "Обновить", "callback_data": "refresh_filters"}])
         return {"inline_keyboard": keyboard}
+
+    @staticmethod
+    def code_keyboard(buffer: str) -> dict[str, object]:
+        rows = [[{"text": digit, "callback_data": f"code_digit_{digit}"} for digit in row] for row in ("123", "456", "789")]
+        empty_row = [
+            {"text": "⌫", "callback_data": "code_backspace"},
+            {"text": "0", "callback_data": "code_digit_0"},
+            {"text": "Отправить", "callback_data": "code_submit"},
+        ]
+        if buffer:
+            display = [{"text": buffer, "callback_data": "code_noop"}]
+            return {"inline_keyboard": [display, *rows, empty_row]}
+        return {"inline_keyboard": [*rows, empty_row]}
+
+    @staticmethod
+    def login_keyboard() -> dict[str, object]:
+        return {
+            "keyboard": [
+                [{"text": "📱 Поделиться номером", "request_contact": True}]
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
+        }
+
+    @staticmethod
+    def main_menu_keyboard() -> dict[str, object]:
+        return {
+            "inline_keyboard": [
+                [{"text": "⚙️ Фильтры", "callback_data": "menu_filters"}],
+                [{"text": "🛠 Настройки", "callback_data": "menu_settings"}],
+                [{"text": "👤 Аккаунт", "callback_data": "menu_account"}],
+            ]
+        }
+
+    @staticmethod
+    def settings_menu_keyboard(settings: MenuSettings) -> dict[str, object]:
+        price_state = "✅" if settings.auto_price_enabled else "⛔️"
+        owner_state = "✅" if settings.send_to_owner_enabled else "⛔️"
+        return {
+            "inline_keyboard": [
+                [{"text": "✏️ Шаблон сообщения", "callback_data": "edit_owner_template"}],
+                [{"text": "🔑 API-ключ", "callback_data": "edit_api_key"}],
+                [{"text": "⚠️ Проверить ключ", "callback_data": "check_api_key"}],
+                [{"text": "🌐 URL API", "callback_data": "edit_api_url"}],
+                [{"text": f"{price_state} Авто-цена", "callback_data": "toggle_auto_price"}],
+                [{"text": f"{owner_state} Отправка владельцу", "callback_data": "toggle_send_owner"}],
+                [{"text": "⬅️ Назад", "callback_data": "menu_main"}],
+            ]
+        }
+
+    @staticmethod
+    def account_menu_keyboard(authorized: bool) -> dict[str, object]:
+        exit_button = [{"text": "🚪 Выйти", "callback_data": "account_logout"}] if authorized else []
+        rows: list[list[dict[str, str]]] = []
+        if exit_button:
+            rows.append(exit_button)
+        rows.append(
+            [{"text": "🔑 Залогиниться", "callback_data": "account_login"}]
+        )
+        rows.append([{"text": "⬅️ Назад", "callback_data": "menu_main"}])
+        return {"inline_keyboard": rows}
+
+    @staticmethod
+    def _settings_menu_text(settings: MenuSettings) -> str:
+        return "\n".join(
+            [
+                "🛠 <b>Настройки</b>",
+                "",
+                "Шаблон владельцу:",
+                f"<code>{html.escape(settings.owner_message_template)}</code>",
+                "",
+                "API-ключ: "
+                + ("<b>задан</b>" if settings.satellite_api_key else "<b>не задан</b>"),
+                "URL API: <b>"
+                + (html.escape(settings.satellite_api_url) if settings.satellite_api_url else "не задан")
+                + "</b>",
+                "Авто-цена: " + ("<b>вкл</b>" if settings.auto_price_enabled else "<b>выкл</b>"),
+                "Отправка владельцу: "
+                + ("<b>вкл</b>" if settings.send_to_owner_enabled else "<b>выкл</b>"),
+            ]
+        )
+
+    @staticmethod
+    def _account_menu_text(authorized: bool, phone: str | None) -> str:
+        status = "авторизован" if authorized else "не авторизован"
+        phone_line = phone or "—"
+        return "\n".join(
+            [
+                "👤 <b>Аккаунт</b>",
+                "",
+                "Статус: <b>" + status + "</b>",
+                "Телефон: <code>" + html.escape(phone_line) + "</code>",
+            ]
+        )
+
+    async def send_login_prompt(self, chat_id: str) -> None:
+        await self.send_text(
+            "Залогиньтесь в Telegram-аккаунт. Нажмите кнопку ниже, "
+            "чтобы поделиться номером телефона.",
+            keyboard=self.login_keyboard(),
+            chat_id=chat_id,
+        )
+
+    async def send_code_prompt(self, chat_id: str, buffer: str = "") -> dict[str, object]:
+        return await self.send_text(
+            "Введите код из Telegram кнопками ниже или текстом:",
+            keyboard=self.code_keyboard(buffer),
+            chat_id=chat_id,
+        )
+
+    async def update_code_prompt(self, chat_id: str, message_id: int, buffer: str) -> None:
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": "Введите код из Telegram кнопками ниже или текстом:",
+            "parse_mode": "HTML",
+            "reply_markup": self.code_keyboard(buffer),
+        }
+        await asyncio.to_thread(self._call, "editMessageText", payload)
+
+    async def send_menu(self, *, chat_id: str | None = None) -> dict[str, object]:
+        return await self.send_text(
+            "🎁 <b>Gift Tracking</b>\nВыберите раздел:", keyboard=self.main_menu_keyboard(), chat_id=chat_id
+        )
+
+    async def send_settings_menu(
+        self, settings: MenuSettings, *, chat_id: str | None = None
+    ) -> dict[str, object]:
+        return await self.send_text(
+            self._settings_menu_text(settings),
+            keyboard=self.settings_menu_keyboard(settings),
+            chat_id=chat_id,
+        )
+
+    async def update_settings_menu(
+        self, chat_id: str, message_id: int, settings: MenuSettings
+    ) -> None:
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": self._settings_menu_text(settings),
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+            "reply_markup": self.settings_menu_keyboard(settings),
+        }
+        await asyncio.to_thread(self._call, "editMessageText", payload)
+
+    async def send_account_menu(
+        self, authorized: bool, phone: str | None, *, chat_id: str | None = None
+    ) -> dict[str, object]:
+        return await self.send_text(
+            self._account_menu_text(authorized, phone),
+            keyboard=self.account_menu_keyboard(authorized),
+            chat_id=chat_id,
+        )
 
     def _call(
         self, method: str, payload: dict[str, object], timeout: int = 20

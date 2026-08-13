@@ -178,5 +178,55 @@ class FormatPriceTests(unittest.TestCase):
         self.assertEqual(format_price(None), "по запросу")
 
 
+from gift_tracking.models import MenuSettings
+from gift_tracking.notifier import BotNotifier
+
+
+class KeyboardTests(unittest.TestCase):
+    def test_code_keyboard_has_digits_controls(self) -> None:
+        keyboard = BotNotifier.code_keyboard("12")
+        rows = keyboard["inline_keyboard"]
+        labels = [button["text"] for row in rows for button in row]
+        self.assertIn("1", labels)
+        self.assertIn("0", labels)
+        self.assertIn("⌫", labels)
+        self.assertIn("Отправить", labels)
+        self.assertIn("12", labels)
+
+    def test_login_keyboard_requests_contact(self) -> None:
+        keyboard = BotNotifier.login_keyboard()
+        button = keyboard["keyboard"][0][0]
+        self.assertTrue(button["request_contact"])
+
+    def test_main_menu_has_three_sections(self) -> None:
+        keyboard = BotNotifier.main_menu_keyboard()
+        labels = [button["text"] for row in keyboard["inline_keyboard"] for button in row]
+        self.assertIn("⚙️ Фильтры", labels)
+        self.assertIn("🛠 Настройки", labels)
+        self.assertIn("👤 Аккаунт", labels)
+
+    def test_settings_menu_keyboard(self) -> None:
+        settings = MenuSettings()
+        keyboard = BotNotifier.settings_menu_keyboard(settings)
+        labels = [button["text"] for row in keyboard["inline_keyboard"] for button in row]
+        self.assertIn("✏️ Шаблон сообщения", labels)
+        self.assertIn("🔑 API-ключ", labels)
+        self.assertIn("⚠️ Проверить ключ", labels)
+        self.assertIn("✅ Авто-цена", labels)
+        self.assertIn("✅ Отправка владельцу", labels)
+
+    def test_account_menu_keyboard(self) -> None:
+        keyboard = BotNotifier.account_menu_keyboard(True)
+        labels = [button["text"] for row in keyboard["inline_keyboard"] for button in row]
+        self.assertIn("🚪 Выйти", labels)
+
+
+class MenuTextTests(unittest.TestCase):
+    def test_settings_menu_text_shows_template(self) -> None:
+        settings = MenuSettings(owner_message_template="Куплю {title}")
+        text = BotNotifier._settings_menu_text(settings)
+        self.assertIn("Куплю {title}", text)
+
+
 if __name__ == "__main__":
     unittest.main()
