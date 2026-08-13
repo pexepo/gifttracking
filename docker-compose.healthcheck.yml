@@ -1,0 +1,11 @@
+services:
+  gift-tracking:
+    build: .
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
