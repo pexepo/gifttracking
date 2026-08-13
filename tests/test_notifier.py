@@ -76,6 +76,37 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("Коллекции: <b>блеклист: <code>Plush Pepe</code></b>", text)
         self.assertNotIn("Модели", text)
 
+    def test_filter_menu_shows_notifications_toggle_text(self) -> None:
+        state = FilterMenuState(
+            owner_username_required=True,
+            backdrop_filter_enabled=False,
+            backdrop_filters=(),
+            blocked_owner_username_substrings=(),
+            notifications_enabled=False,
+        )
+        from gift_tracking.notifier import BotNotifier
+
+        text = BotNotifier._filter_menu_text(state)
+        self.assertIn("Автосообщения: <b>выключены</b>", text)
+
+    def test_filter_menu_keyboard_starts_with_notifications_toggle(self) -> None:
+        state = FilterMenuState(
+            owner_username_required=True,
+            backdrop_filter_enabled=False,
+            backdrop_filters=(),
+            blocked_owner_username_substrings=(),
+            notifications_enabled=True,
+        )
+        from gift_tracking.notifier import BotNotifier
+
+        keyboard = BotNotifier._filter_menu_keyboard(state)
+        rows = keyboard["inline_keyboard"]
+        self.assertEqual(rows[0][0]["callback_data"], "toggle_notifications")
+        self.assertIn(
+            "вкл" if state.notifications_enabled else "выкл",
+            rows[0][0]["text"],
+        )
+
     def test_filter_menu_keyboard_has_blacklist_and_no_models(self) -> None:
         state = FilterMenuState(
             owner_username_required=True,

@@ -602,6 +602,60 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 close_monitor(monitor)
 
+    async def test_notifications_toggle_pauses_sending(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+                monitor._runtime_filters = replace(
+                    monitor._runtime_filters, notifications_enabled=False
+                )
+                for number in (1, 2):
+                    monitor.storage.record_gift(event(number, number))
+                await monitor.send_pending_notifications()
+                self.assertEqual(len(monitor.storage.pending_notifications()), 2)
+                self.assertEqual(len(notifier.status_messages), 0)
+                self.assertEqual(len(notifier.sent), 0)
+                monitor._runtime_filters = replace(
+                    monitor._runtime_filters, notifications_enabled=True
+                )
+                await monitor.send_pending_notifications()
+                self.assertEqual(len(monitor.storage.pending_notifications()), 0)
+                self.assertEqual(len(notifier.status_messages), 2)
+            finally:
+                close_monitor(monitor)
+
+    async def test_toggle_notifications_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+                await monitor._handle_callback_query(
+                    {
+                        "id": "cb9",
+                        "data": "toggle_notifications",
+                        "message": {"chat": {"id": 1}, "message_id": 77},
+                    }
+                )
+                self.assertFalse(monitor._runtime_filters.notifications_enabled)
+                self.assertEqual(
+                    monitor.storage.load_runtime_filters(), monitor._runtime_filters
+                )
+                await monitor._handle_callback_query(
+                    {
+                        "id": "cb10",
+                        "data": "toggle_notifications",
+                        "message": {"chat": {"id": 1}, "message_id": 77},
+                    }
+                )
+                self.assertTrue(monitor._runtime_filters.notifications_enabled)
+            finally:
+                close_monitor(monitor)
+
     async def test_price_range_skips_outside(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(directory)

@@ -292,6 +292,8 @@ class GiftMonitor:
             return None
 
     async def send_pending_notifications(self) -> None:
+        if not self._runtime_filters.notifications_enabled:
+            return
         pending: list[GiftEvent] = []
         for event in self.storage.pending_notifications():
             if self._runtime_filters.require_owner_username and not event.owner_username:
@@ -601,6 +603,12 @@ class GiftMonitor:
                 "Пустое сообщение сбросит значение.\nДля отмены: /cancel",
                 chat_id=chat_id,
             )
+        elif data == "toggle_notifications":
+            self._runtime_filters = replace(
+                self._runtime_filters,
+                notifications_enabled=not self._runtime_filters.notifications_enabled,
+            )
+            self._save_runtime_filters()
         elif data == "toggle_owner_username":
             self._runtime_filters = replace(
                 self._runtime_filters,
@@ -641,6 +649,7 @@ class GiftMonitor:
                 chat_id, message_id, self._menu_settings
             )
         elif self._pending_edit is None and data in {
+            "toggle_notifications",
             "toggle_owner_username",
             "toggle_backdrop_filter",
             "refresh_filters",

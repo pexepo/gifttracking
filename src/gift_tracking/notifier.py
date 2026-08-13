@@ -233,6 +233,9 @@ class BotNotifier:
         return "\n".join(
             [
                 "⚙️ <b>Фильтры Gift Tracking</b>",
+                "🔔 Автосообщения: <b>"
+                + ("включены" if state.notifications_enabled else "выключены")
+                + "</b>",
                 "",
                 "ЛС владельцу: "
                 + (
@@ -259,13 +262,23 @@ class BotNotifier:
             [
                 {
                     "text": (
+                        "🔔 Автосообщения: вкл"
+                        if state.notifications_enabled
+                        else "🔔 Автосообщения: выкл"
+                    ),
+                    "callback_data": "toggle_notifications",
+                }
+            ],
+            [
+                {
+                    "text": (
                         "ЛС: только @username"
                         if state.owner_username_required
                         else "ЛС: все владельцы"
                     ),
                     "callback_data": "toggle_owner_username",
                 }
-            ]
+            ],
         ]
         if state.backdrop_filters:
             keyboard.append(
