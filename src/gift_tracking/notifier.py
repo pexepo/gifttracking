@@ -34,6 +34,10 @@ class FilterMenuState:
     backdrop_filter_enabled: bool
     backdrop_filters: tuple[str, ...]
     blocked_owner_username_substrings: tuple[str, ...]
+    model_filter_enabled: bool = False
+    model_filters: tuple[str, ...] = ()
+    min_price: float | None = None
+    max_price: float | None = None
 
 
 def format_notification(event: GiftEvent, timezone: str) -> str:
@@ -213,6 +217,21 @@ class BotNotifier:
                 if state.backdrop_filter_enabled
                 else f"на паузе: <code>{html.escape(names)}</code>"
             )
+        model_line = "не задан"
+        if state.model_filters:
+            model_line = (
+                f"включен: <code>{html.escape(', '.join(state.model_filters))}</code>"
+                if state.model_filter_enabled
+                else f"на паузе: <code>{html.escape(', '.join(state.model_filters))}</code>"
+            )
+        price_line = "не задан"
+        if state.min_price is not None or state.max_price is not None:
+            parts = []
+            if state.min_price is not None:
+                parts.append(f"мин {state.min_price:g} TON")
+            if state.max_price is not None:
+                parts.append(f"макс {state.max_price:g} TON")
+            price_line = "<b>" + html.escape("; ".join(parts)) + "</b>"
         return "\n".join(
             [
                 "⚙️ <b>Фильтры Gift Tracking</b>",
@@ -231,6 +250,8 @@ class BotNotifier:
                 )
                 + "</b>",
                 f"Фон: <b>{backdrop_line}</b>",
+                f"Модели: <b>{model_line}</b>",
+                f"Цена: <b>{price_line}</b>",
             ]
         )
 
@@ -271,6 +292,26 @@ class BotNotifier:
                     "callback_data": "edit_blocked_usernames",
                 }
             ]
+        )
+        if state.model_filters:
+            keyboard.append(
+                [
+                    {
+                        "text": (
+                            "Модели: включен"
+                            if state.model_filter_enabled
+                            else "Модели: выключен"
+                        ),
+                        "callback_data": "toggle_model_filter",
+                    }
+                ]
+            )
+        keyboard.append(
+            [{"text": "Редактировать модели", "callback_data": "edit_model_filters"}]
+        )
+        keyboard.append(
+            [{"text": "Цена мин/макс", "callback_data": "edit_min_price"},
+             {"text": "…", "callback_data": "code_noop"}]
         )
         keyboard.append([{"text": "Обновить", "callback_data": "refresh_filters"}])
         return {"inline_keyboard": keyboard}

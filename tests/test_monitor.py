@@ -505,6 +505,81 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(notifier.status_messages, [])
             close_monitor(monitor)
 
+    async def test_menu_navigation_shows_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+
+                await monitor._handle_message({"chat": {"id": 1}, "text": "/menu"})
+                await monitor._handle_callback_query(
+                    {
+                        "id": "cb-menu",
+                        "data": "menu_settings",
+                        "message": {"chat": {"id": 1}, "message_id": 55},
+                    }
+                )
+
+                self.assertEqual(len(notifier.menus), 1)
+                self.assertEqual(len(notifier.updated_settings_menus), 1)
+                self.assertEqual(notifier.updated_settings_menus[0][1], 55)
+            finally:
+                close_monitor(monitor)
+
+    async def test_edits_owner_template_from_message(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+
+                await monitor._handle_callback_query(
+                    {
+                        "id": "cb-tpl",
+                        "data": "edit_owner_template",
+                        "message": {"chat": {"id": 1}, "message_id": 66},
+                    }
+                )
+                await monitor._handle_message(
+                    {"chat": {"id": 1}, "text": "Куплю {title} #{number}!"}
+                )
+
+                self.assertEqual(
+                    monitor._menu_settings.owner_message_template,
+                    "Куплю {title} #{number}!",
+                )
+                self.assertEqual(
+                    monitor.storage.load_menu_settings(), monitor._menu_settings
+                )
+            finally:
+                close_monitor(monitor)
+
+    async def test_toggles_send_to_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+
+                await monitor._handle_callback_query(
+                    {
+                        "id": "cb-send",
+                        "data": "toggle_send_owner",
+                        "message": {"chat": {"id": 1}, "message_id": 77},
+                    }
+                )
+
+                self.assertFalse(monitor._menu_settings.send_to_owner_enabled)
+                self.assertEqual(
+                    monitor.storage.load_menu_settings(), monitor._menu_settings
+                )
+            finally:
+                close_monitor(monitor)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,6 +56,13 @@ def _split_csv(value: str) -> tuple[str, ...]:
     )
 
 
+def _parse_price(value: str) -> float | None:
+    try:
+        return float(value.replace(",", ".").strip())
+    except ValueError:
+        return None
+
+
 @dataclass(slots=True)
 class PendingEdit:
     kind: str
@@ -362,10 +369,52 @@ class GiftMonitor:
             backdrop_filter_enabled=self._runtime_filters.backdrop_filter_enabled,
             backdrop_filters=self._runtime_filters.backdrop_filters,
             blocked_owner_username_substrings=self._runtime_filters.blocked_owner_username_substrings,
+            model_filter_enabled=self._runtime_filters.model_filter_enabled,
+            model_filters=self._runtime_filters.model_filters,
+            min_price=self._runtime_filters.min_price,
+            max_price=self._runtime_filters.max_price,
         )
+
+    def _with_menu_settings(self, **changes: object) -> MenuSettings:
+        return MenuSettings(
+            owner_message_template=str(
+                changes.get("owner_message_template", self._menu_settings.owner_message_template)
+            ),
+            satellite_api_key=str(
+                changes.get("satellite_api_key", self._menu_settings.satellite_api_key)
+            ),
+            satellite_api_url=str(
+                changes.get("satellite_api_url", self._menu_settings.satellite_api_url)
+            ),
+            auto_price_enabled=bool(
+                changes.get("auto_price_enabled", self._menu_settings.auto_price_enabled)
+            ),
+            send_to_owner_enabled=bool(
+                changes.get("send_to_owner_enabled", self._menu_settings.send_to_owner_enabled)
+            ),
+        )
+
+    def _pricing_for_settings(self) -> GiftSatelliteClient:
+        return GiftSatelliteClient(
+            self._menu_settings.satellite_api_key,
+            self._menu_settings.satellite_api_url,
+            insecure_ssl=self.config.bot_api_insecure_ssl,
+        )
+
+    async def _run_login_flow(self) -> None:
+        from .login import LoginFlow
+
+        flow = LoginFlow(self.api, self.notifier, self.config.notify_chat_id)
+        try:
+            await flow.run()
+        except Exception:
+            LOGGER.exception("Ошибка login flow")
 
     def _save_runtime_filters(self) -> None:
         self.storage.save_runtime_filters(self._runtime_filters)
+
+    def _save_menu_settings(self) -> None:
+        self.storage.save_menu_settings(self._menu_settings)
 
     async def _control_loop(self) -> None:
         while True:
@@ -395,8 +444,14 @@ class GiftMonitor:
         chat_id = str(chat.get("id"))
         if chat_id != self.config.notify_chat_id:
             return
-        if text in {"/start", "/filters"}:
-            await self.notifier.send_filter_menu(self._filter_menu_state(), chat_id=chat_id)
+        if text in {"/start", "/filters", "/menu"}:
+            if text == "/menu":
+                await self.notifier.send_menu(chat_id=chat_id)
+            else:
+                await self.notifier.send_filter_menu(self._filter_menu_state(), chat_id=chat_id)
+            return
+        if text == "/settings":
+            await self.notifier.send_settings_menu(self._menu_settings, chat_id=chat_id)
             return
         if text == "/cancel" and self._pending_edit is not None:
             self._pending_edit = None
@@ -423,7 +478,125 @@ class GiftMonitor:
             return
 
         answer = "Фильтры обновлены"
-        if data == "toggle_owner_username":
+        if data == "menu_main":
+            await self.notifier.send_menu(chat_id=chat_id)
+            await self.notifier.answer_callback_query(callback_query_id, "Главное меню")
+            return
+        if data == "menu_filters":
+            await self.notifier.update_filter_menu(chat_id, message_id, self._filter_menu_state())
+            await self.notifier.answer_callback_query(callback_query_id, "Фильтры")
+            return
+        if data == "menu_settings":
+            await self.notifier.update_settings_menu(chat_id, message_id, self._menu_settings)
+            await self.notifier.answer_callback_query(callback_query_id, "Настройки")
+            return
+        if data == "menu_account":
+            phone = None
+            try:
+                phone = await self.api.get_me_phone()
+            except Exception:
+                LOGGER.exception("Не удалось узнать телефон")
+            authorized = False
+            try:
+                authorized = await self.api.is_authorized()
+            except Exception:
+                LOGGER.exception("Не удалось проверить авторизацию")
+            await self.notifier.send_account_menu(authorized, phone, chat_id=chat_id)
+            await self.notifier.answer_callback_query(callback_query_id, "Аккаунт")
+            return
+        if data == "account_login":
+            await self._run_login_flow()
+            await self.notifier.answer_callback_query(callback_query_id, "Готово")
+            return
+        if data == "account_logout":
+            try:
+                await self.api.client.log_out()
+            except Exception as exc:
+                LOGGER.warning("Ошибка выхода: %s", exc)
+            await self.notifier.send_account_menu(False, None, chat_id=chat_id)
+            await self.notifier.answer_callback_query(callback_query_id, "Выход выполнен")
+            return
+        if data == "edit_owner_template":
+            self._pending_edit = PendingEdit("owner_template", menu_message_id=message_id)
+            await self.notifier.send_text(
+                "Отправь новый шаблон сообщения владельцу. "
+                "Плейсхолдеры: {title}, {number}, {model}, {backdrop}, {price}, {link}\n"
+                "Для отмены: /cancel",
+                chat_id=chat_id,
+            )
+            await self.notifier.answer_callback_query(callback_query_id, "Жду шаблон")
+            return
+        if data == "edit_api_key":
+            self._pending_edit = PendingEdit("api_key", menu_message_id=message_id)
+            await self.notifier.send_text(
+                "Отправь API-ключ Gift Satellite текстом.\nДля отмены: /cancel",
+                chat_id=chat_id,
+            )
+            await self.notifier.answer_callback_query(callback_query_id, "Жду ключ")
+            return
+        if data == "edit_api_url":
+            self._pending_edit = PendingEdit("api_url", menu_message_id=message_id)
+            await self.notifier.send_text(
+                "Отправь базовый URL API.\nДля отмены: /cancel",
+                chat_id=chat_id,
+            )
+            await self.notifier.answer_callback_query(callback_query_id, "Жду URL")
+            return
+        if data == "check_api_key":
+            if not self._menu_settings.satellite_api_key or not self._menu_settings.satellite_api_url:
+                message = "Сначала задай ключ и URL"
+            else:
+                try:
+                    ok, detail = await self._pricing_for_settings().check_key()
+                    message = detail
+                except Exception as exc:
+                    message = f"Ошибка: {exc}"
+            await self.notifier.answer_callback_query(callback_query_id, message)
+            await self.notifier.update_settings_menu(chat_id, message_id, self._menu_settings)
+            return
+        if data == "toggle_auto_price":
+            self._menu_settings = self._with_menu_settings(
+                auto_price_enabled=not self._menu_settings.auto_price_enabled
+            )
+            self._save_menu_settings()
+            answer = "Настройки обновлены"
+        elif data == "toggle_send_owner":
+            self._menu_settings = self._with_menu_settings(
+                send_to_owner_enabled=not self._menu_settings.send_to_owner_enabled
+            )
+            self._save_menu_settings()
+            answer = "Настройки обновлены"
+        elif data == "toggle_model_filter":
+            self._runtime_filters = replace(
+                self._runtime_filters,
+                model_filter_enabled=not self._runtime_filters.model_filter_enabled,
+            )
+            self._save_runtime_filters()
+        elif data == "edit_model_filters":
+            self._pending_edit = PendingEdit("model_filters", menu_message_id=message_id)
+            answer = "Пришли модели через запятую"
+            await self.notifier.send_text(
+                "Отправь список моделей через запятую. Пример: <code>Albino,Pumpkin</code>\n"
+                "Пустое сообщение или <code>none</code> очистит список.\nДля отмены: /cancel",
+                chat_id=chat_id,
+            )
+        elif data == "edit_min_price":
+            self._pending_edit = PendingEdit("min_price", menu_message_id=message_id)
+            answer = "Пришли минимальную цену (TON)"
+            await self.notifier.send_text(
+                "Отправь минимальную цену числом, например <code>5</code>.\n"
+                "Пустое сообщение сбросит значение.\nДля отмены: /cancel",
+                chat_id=chat_id,
+            )
+        elif data == "edit_max_price":
+            self._pending_edit = PendingEdit("max_price", menu_message_id=message_id)
+            answer = "Пришли максимальную цену (TON)"
+            await self.notifier.send_text(
+                "Отправь максимальную цену числом, например <code>500</code>.\n"
+                "Пустое сообщение сбросит значение.\nДля отмены: /cancel",
+                chat_id=chat_id,
+            )
+        elif data == "toggle_owner_username":
             self._runtime_filters = RuntimeFilters(
                 require_owner_username=not self._runtime_filters.require_owner_username,
                 backdrop_filter_enabled=self._runtime_filters.backdrop_filter_enabled,
@@ -462,7 +635,24 @@ class GiftMonitor:
         else:
             answer = "Неизвестная команда"
 
-        await self.notifier.update_filter_menu(chat_id, message_id, self._filter_menu_state())
+        if data in {"toggle_send_owner", "toggle_auto_price"}:
+            await self.notifier.update_settings_menu(
+                chat_id, message_id, self._menu_settings
+            )
+        elif self._pending_edit is None and data in {
+            "toggle_owner_username",
+            "toggle_backdrop_filter",
+            "toggle_model_filter",
+            "refresh_filters",
+            "edit_backdrop_filters",
+            "edit_blocked_usernames",
+            "edit_model_filters",
+            "edit_min_price",
+            "edit_max_price",
+        }:
+            await self.notifier.update_filter_menu(
+                chat_id, message_id, self._filter_menu_state()
+            )
         await self.notifier.answer_callback_query(callback_query_id, answer)
 
     async def _apply_pending_edit(self, chat_id: str, text: str) -> None:
@@ -472,25 +662,72 @@ class GiftMonitor:
         values = () if not normalized or normalized.casefold() == "none" else _split_csv(normalized)
         if pending_edit is None:
             return
-        if pending_edit.kind == "backdrop_filters":
-            self._runtime_filters = RuntimeFilters(
-                require_owner_username=self._runtime_filters.require_owner_username,
-                backdrop_filter_enabled=bool(values),
-                backdrop_filters=values,
-                blocked_owner_username_substrings=self._runtime_filters.blocked_owner_username_substrings,
+        if pending_edit.kind == "model_filters":
+            self._runtime_filters = replace(
+                self._runtime_filters,
+                model_filter_enabled=bool(values),
+                model_filters=values,
             )
-            confirmation = "Фильтр по фону обновлён."
+            confirmation = "Фильтр по моделям обновлён."
+        elif pending_edit.kind == "min_price":
+            price = None if not normalized else _parse_price(normalized)
+            if normalized and price is None:
+                await self.notifier.send_text("❌ Не число. Отмена.", chat_id=chat_id)
+                return
+            self._runtime_filters = replace(self._runtime_filters, min_price=price)
+            confirmation = "Минимальная цена обновлена."
+        elif pending_edit.kind == "max_price":
+            price = None if not normalized else _parse_price(normalized)
+            if normalized and price is None:
+                await self.notifier.send_text("❌ Не число. Отмена.", chat_id=chat_id)
+                return
+            self._runtime_filters = replace(self._runtime_filters, max_price=price)
+            confirmation = "Максимальная цена обновлена."
+        elif pending_edit.kind == "owner_template":
+            self._menu_settings = self._with_menu_settings(owner_message_template=normalized)
+            self._save_menu_settings()
+            confirmation = "Шаблон обновлён."
+        elif pending_edit.kind == "api_key":
+            self._menu_settings = self._with_menu_settings(satellite_api_key=normalized)
+            self._save_menu_settings()
+            confirmation = "API-ключ сохранён."
+        elif pending_edit.kind == "api_url":
+            self._menu_settings = self._with_menu_settings(satellite_api_url=normalized)
+            self._save_menu_settings()
+            confirmation = "URL сохранён."
         else:
-            self._runtime_filters = RuntimeFilters(
-                require_owner_username=self._runtime_filters.require_owner_username,
-                backdrop_filter_enabled=self._runtime_filters.backdrop_filter_enabled,
-                backdrop_filters=self._runtime_filters.backdrop_filters,
-                blocked_owner_username_substrings=values,
+            confirmation = (
+                "Фильтр по фону обновлён."
+                if pending_edit.kind == "backdrop_filters"
+                else "Список исключённых username обновлён."
             )
-            confirmation = "Список исключённых username обновлён."
+            if pending_edit.kind == "backdrop_filters":
+                self._runtime_filters = replace(
+                    self._runtime_filters,
+                    backdrop_filter_enabled=bool(values),
+                    backdrop_filters=values,
+                )
+            elif pending_edit.kind == "blocked_usernames":
+                self._runtime_filters = replace(
+                    self._runtime_filters,
+                    blocked_owner_username_substrings=values,
+                )
         self._save_runtime_filters()
         await self.notifier.send_text(confirmation, chat_id=chat_id)
-        if pending_edit.menu_message_id is not None:
+        if pending_edit.kind in {
+            "owner_template",
+            "api_key",
+            "api_url",
+        }:
+            if pending_edit.menu_message_id is not None:
+                await self.notifier.update_settings_menu(
+                    chat_id, pending_edit.menu_message_id, self._menu_settings
+                )
+            else:
+                await self.notifier.send_settings_menu(
+                    self._menu_settings, chat_id=chat_id
+                )
+        elif pending_edit.menu_message_id is not None:
             await self.notifier.update_filter_menu(
                 chat_id, pending_edit.menu_message_id, self._filter_menu_state()
             )
