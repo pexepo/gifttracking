@@ -10,13 +10,18 @@ from time import monotonic
 from telethon import errors
 
 from .config import Config
-from .models import Collection, RuntimeFilters
+from .models import Collection, GiftEvent, MenuSettings, PriceInfo, RuntimeFilters
 from .notifier import (
     BotLongPollTimeout,
     BotNotifier,
     FilterMenuState,
     NotificationError,
+    attribute_value,
+    format_notification,
+    format_price,
+    render_owner_message,
 )
+from .pricing import GiftSatelliteClient
 from .storage import Storage
 from .telegram_api import GiftTelegramApi
 
@@ -78,10 +83,27 @@ class GiftMonitor:
             backdrop_filters=config.backdrop_filters,
             blocked_owner_username_substrings=config.blocked_owner_username_substrings,
         )
+        saved_settings = self.storage.load_menu_settings()
+        if saved_settings is not None:
+            self._menu_settings = saved_settings
+        else:
+            self._menu_settings = MenuSettings(
+                satellite_api_key=config.satellite_api_key,
+                satellite_api_url=config.satellite_api_url,
+            )
+        self._pricing: GiftSatelliteClient | None = None
         self._pending_edit: PendingEdit | None = None
 
     async def run(self) -> None:
-        await self.api.start()
+        await self.api.connect()
+        if not await self.api.is_authorized():
+            from .login import LoginFlow
+
+            flow = LoginFlow(self.api, self.notifier, self.config.notify_chat_id)
+            if not await flow.run():
+                await self.api.disconnect()
+                self.storage.close()
+                return
         control_task = asyncio.create_task(self._control_loop())
         try:
             startup_notified = False
@@ -224,14 +246,41 @@ class GiftMonitor:
         initialized = replace(collection, last_issued=start - 1)
         await self.check_collection(initialized)
 
+    def _matches_models(self, event: GiftEvent) -> bool:
+        if not self._runtime_filters.model_filter_enabled or not self._runtime_filters.model_filters:
+            return True
+        return any(
+            getattr(attribute, "name", "").casefold() in self._runtime_filters.model_filters
+            for attribute in event.attributes
+            if attribute.kind == "model"
+        )
+
+    async def _fetch_price_for(self, event: GiftEvent) -> PriceInfo | None:
+        if not self._menu_settings.auto_price_enabled:
+            return None
+        if not self._menu_settings.satellite_api_key or not self._menu_settings.satellite_api_url:
+            return None
+        if self._pricing is None:
+            self._pricing = GiftSatelliteClient(
+                self._menu_settings.satellite_api_key,
+                self._menu_settings.satellite_api_url,
+                insecure_ssl=self.config.bot_api_insecure_ssl,
+            )
+        try:
+            return await self._pricing.fetch_price(
+                event.title,
+                attribute_value(event, "model"),
+                attribute_value(event, "backdrop"),
+            )
+        except Exception:
+            LOGGER.exception("Ошибка получения цены для %s", event.slug)
+            return None
+
     async def send_pending_notifications(self) -> None:
         for event in self.storage.pending_notifications():
             if self._runtime_filters.require_owner_username and not event.owner_username:
                 self.storage.mark_notified(event.slug)
-                LOGGER.info(
-                    "Пропуск %s: у владельца нет публичного username",
-                    event.slug,
-                )
+                LOGGER.info("Пропуск %s: у владельца нет публичного username", event.slug)
                 continue
             blocked_part = _blocked_owner_username(
                 event.owner_username,
@@ -239,11 +288,7 @@ class GiftMonitor:
             )
             if blocked_part is not None:
                 self.storage.mark_notified(event.slug)
-                LOGGER.info(
-                    "Пропуск %s: username владельца похож на маркетплейс (%s)",
-                    event.slug,
-                    blocked_part,
-                )
+                LOGGER.info("Пропуск %s: username владельца похож на маркетплейс (%s)", event.slug, blocked_part)
                 continue
             if self._runtime_filters.backdrop_filter_enabled and not _matches_backdrop(
                 event, self._runtime_filters.backdrop_filters
@@ -251,13 +296,53 @@ class GiftMonitor:
                 self.storage.mark_notified(event.slug)
                 LOGGER.info("Пропуск %s: фон не подходит под фильтр", event.slug)
                 continue
-            try:
-                await self.notifier.send_event(event)
-            except NotificationError as exc:
-                LOGGER.error("Не удалось отправить %s: %s", event.slug, exc)
-                return
+            if not self._matches_models(event):
+                self.storage.mark_notified(event.slug)
+                LOGGER.info("Пропуск %s: модель не подходит под фильтр", event.slug)
+                continue
+            price = await self._fetch_price_for(event)
+            min_price = self._runtime_filters.min_price
+            max_price = self._runtime_filters.max_price
+            if price and price.markets:
+                lowest = min(
+                    (market.price_ton or market.price_stars or float("inf"))
+                    for market in price.markets
+                )
+                if (min_price is not None and lowest < min_price) or (
+                    max_price is not None and lowest > max_price
+                ):
+                    self.storage.mark_notified(event.slug)
+                    LOGGER.info("Пропуск %s: цена %s вне диапазона", event.slug, lowest)
+                    continue
+            await self._notify_owner_and_admin(event, price)
             self.storage.mark_notified(event.slug)
-            LOGGER.info("Уведомление отправлено: %s", event.slug)
+            LOGGER.info("Уведомление обработано: %s", event.slug)
+
+    async def _notify_owner_and_admin(self, event: GiftEvent, price: PriceInfo | None) -> None:
+        owner_status = None
+        if (
+            self._menu_settings.send_to_owner_enabled
+            and event.owner_user_id is not None
+        ):
+            template = self._menu_settings.owner_message_template
+            text = render_owner_message(template, event, price)
+            try:
+                await self.api.send_message_to_user(event.owner_user_id, text)
+                owner_status = "✅ сообщение владельцу отправлено"
+            except (errors.RPCError, ValueError) as exc:
+                owner_status = f"❌ владельцу не отправлено: {exc}"
+                LOGGER.warning("Не удалось написать владельцу %s: %s", event.slug, exc)
+        price_line = ""
+        if price is not None:
+            price_line = f"\nЦены: {format_price(price)}"
+        admin_text = format_notification(event, self.config.timezone) + price_line
+        if owner_status:
+            admin_text += f"\n{owner_status}"
+        try:
+            await self.notifier.send_text(admin_text)
+        except NotificationError as exc:
+            LOGGER.error("Не удалось отправить админу %s: %s", event.slug, exc)
+            raise
 
     async def _safe_status_message(self, text: str) -> None:
         try:

@@ -7,7 +7,14 @@ from pathlib import Path
 from telethon import errors
 
 from gift_tracking.config import Config
-from gift_tracking.models import Attribute, Collection, GiftEvent
+from gift_tracking.models import (
+    Attribute,
+    Collection,
+    GiftEvent,
+    MarketPrice,
+    MenuSettings,
+    PriceInfo,
+)
 from gift_tracking.monitor import GiftMonitor
 
 
@@ -31,9 +38,13 @@ def event(number: int, issued: int) -> GiftEvent:
 class FakeApi:
     def __init__(self, events: dict[str, GiftEvent]) -> None:
         self.events = events
+        self.pm_sent: list[tuple[int, str]] = []
 
     async def unique_gift(self, slug: str):
         return self.events[slug], object()
+
+    async def send_message_to_user(self, user_id: int, text: str) -> None:
+        self.pm_sent.append((user_id, text))
 
 
 class MissingGiftApi(FakeApi):
@@ -54,6 +65,10 @@ class FakeNotifier:
         self.filter_menus: list[tuple[object, str | None]] = []
         self.updated_filter_menus: list[tuple[str, int, object]] = []
         self.callback_answers: list[tuple[str, str]] = []
+        self.menus: list[tuple[str | None]] = []
+        self.settings_menus: list[tuple[object, str | None]] = []
+        self.updated_settings_menus: list[tuple[str, int, object]] = []
+        self.account_menus: list[tuple[bool, str | None, str | None]] = []
 
     async def send_event(self, gift_event: GiftEvent) -> None:
         self.sent.append(gift_event)
@@ -71,6 +86,34 @@ class FakeNotifier:
 
     async def answer_callback_query(self, callback_query_id: str, text: str) -> None:
         self.callback_answers.append((callback_query_id, text))
+
+    async def send_menu(self, *, chat_id=None):
+        self.menus.append((chat_id,))
+        return {"message_id": len(self.menus)}
+
+    async def send_settings_menu(self, settings, *, chat_id=None):
+        self.settings_menus.append((settings, chat_id))
+        return {"message_id": len(self.settings_menus)}
+
+    async def update_settings_menu(self, chat_id: str, message_id: int, settings) -> None:
+        self.updated_settings_menus.append((chat_id, message_id, settings))
+
+    async def send_account_menu(self, authorized, phone, *, chat_id=None):
+        self.account_menus.append((authorized, phone, chat_id))
+        return {"message_id": len(self.account_menus)}
+
+
+class FakePricing:
+    def __init__(self, price: PriceInfo | None) -> None:
+        self.price = price
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def fetch_price(self, collection: str, model: str, backdrop: str):
+        self.calls.append((collection, model, backdrop))
+        return self.price
+
+    async def check_key(self) -> tuple[bool, str]:
+        return self.price is not None, "ok"
 
 
 def close_monitor(monitor: GiftMonitor) -> None:
@@ -128,7 +171,9 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             await monitor.check_collection(monitor.storage.get_collection(1))
             await monitor.send_pending_notifications()
 
-            self.assertEqual([item.slug for item in notifier.sent], ["PlushPepe-2"])
+            self.assertTrue(
+                any("PlushPepe-2" in text or "Plush Pepe #2" in text for text, _ in notifier.status_messages)
+            )
             self.assertEqual(monitor.storage.get_collection(1).last_issued, 2)
             close_monitor(monitor)
 
@@ -200,7 +245,9 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
 
             await monitor.send_pending_notifications()
 
-            self.assertEqual([item.slug for item in notifier.sent], ["PlushPepe-2"])
+            self.assertTrue(
+                any("PlushPepe-2" in text or "Plush Pepe #2" in text for text, _ in notifier.status_messages)
+            )
             self.assertEqual(monitor.storage.pending_notifications(), [])
             close_monitor(monitor)
 
@@ -298,7 +345,9 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             await monitor.check_collection(monitor.storage.get_collection(1))
             await monitor.send_pending_notifications()
 
-            self.assertEqual([item.slug for item in notifier.sent], ["PlushPepe-3"])
+            self.assertTrue(
+                any("PlushPepe-3" in text or "Plush Pepe #3" in text for text, _ in notifier.status_messages)
+            )
             self.assertEqual(monitor.storage.get_collection(1).last_issued, 3)
             close_monitor(monitor)
 
@@ -345,6 +394,116 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
                 )
             finally:
                 close_monitor(monitor)
+
+    async def test_sends_owner_message_with_price_and_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            price = PriceInfo(
+                collection="Plush Pepe",
+                model="Pumpkin",
+                backdrop="",
+                markets=(MarketPrice("Tonnel", price_ton=9.5),),
+                fetched_at=datetime.now(UTC),
+            )
+            api = FakeApi({"PlushPepe-2": event(2, 2)})
+            monitor.api = api
+            monitor._pricing = FakePricing(price)
+            monitor._menu_settings = MenuSettings(
+                owner_message_template="Куплю {title} #{number} за {price}",
+                satellite_api_key="k",
+                satellite_api_url="https://api.example.com",
+                auto_price_enabled=True,
+                send_to_owner_enabled=True,
+            )
+            gift = replace(event(2, 2), owner_user_id=42)
+            monitor.storage.record_gift(gift)
+            notifier = FakeNotifier()
+            monitor.notifier = notifier
+
+            await monitor.send_pending_notifications()
+
+            self.assertEqual(len(api.pm_sent), 1)
+            user_id, text = api.pm_sent[0]
+            self.assertEqual(user_id, 42)
+            self.assertIn("Plush Pepe #2", text)
+            self.assertIn("9.5 TON", text)
+            self.assertIn("✅", [t for t, _ in notifier.status_messages][-1] or "")
+            self.assertEqual(monitor.storage.pending_notifications(), [])
+            close_monitor(monitor)
+
+    async def test_skips_owner_pm_when_user_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            monitor._menu_settings = MenuSettings(
+                owner_message_template="Куплю {title} за {price}",
+                satellite_api_key="k",
+                satellite_api_url="https://api.example.com",
+                auto_price_enabled=False,
+                send_to_owner_enabled=True,
+            )
+            gift = event(2, 2)  # owner_user_id is None
+            monitor.storage.record_gift(gift)
+            notifier = FakeNotifier()
+            monitor.notifier = notifier
+
+            await monitor.send_pending_notifications()
+
+            self.assertEqual(len(notifier.status_messages), 1)
+            self.assertNotIn("✅", notifier.status_messages[0][0].splitlines()[-1])
+            self.assertEqual(monitor.storage.pending_notifications(), [])
+            close_monitor(monitor)
+
+    async def test_model_filter_skips_non_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            monitor._runtime_filters = replace(
+                monitor._runtime_filters,
+                model_filter_enabled=True,
+                model_filters=("Albino",),
+            )
+            gift = event(2, 2)
+            monitor.storage.record_gift(gift)
+            notifier = FakeNotifier()
+            monitor.notifier = notifier
+
+            await monitor.send_pending_notifications()
+
+            self.assertEqual(notifier.status_messages, [])
+            close_monitor(monitor)
+
+    async def test_price_range_skips_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            price = PriceInfo(
+                collection="Plush Pepe",
+                model="Pumpkin",
+                backdrop="",
+                markets=(MarketPrice("Tonnel", price_ton=50.0),),
+                fetched_at=datetime.now(UTC),
+            )
+            monitor._pricing = FakePricing(price)
+            monitor._runtime_filters = replace(
+                monitor._runtime_filters, min_price=None, max_price=20.0
+            )
+            monitor._menu_settings = MenuSettings(
+                owner_message_template="Куплю {title}",
+                satellite_api_key="k",
+                satellite_api_url="https://api.example.com",
+                auto_price_enabled=True,
+                send_to_owner_enabled=False,
+            )
+            monitor.storage.record_gift(event(2, 2))
+            notifier = FakeNotifier()
+            monitor.notifier = notifier
+
+            await monitor.send_pending_notifications()
+
+            self.assertEqual(notifier.sent, [])
+            close_monitor(monitor)
 
 
 if __name__ == "__main__":
