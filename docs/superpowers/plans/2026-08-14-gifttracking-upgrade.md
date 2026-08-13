@@ -489,7 +489,7 @@ git commit -m "Add owner message template rendering"
 - Consumes: `PriceInfo`, `MarketPrice` from Task 1.
 - Produces:
   - `class SatellitePricingError(RuntimeError)`
-  - `class GiftSatelliteClient` — `__init__(api_key: str, base_url: str, *, insecure_ssl: bool = False, timeout: int = 20)`, `async fetch_price(collection: str, model: str, backdrop: str) -> PriceInfo | None`, `async check_key() -> tuple[bool, str]`, `static parse_prices(data: dict[str, Any]) -> PriceInfo | None`, `_parse_market(raw: Any) -> MarketPrice | None`.
+  - `class GiftSatelliteClient` — `__init__(api_key: str, base_url: str, *, insecure_ssl: bool = False, timeout: int = 8)`, `async fetch_price(collection: str, model: str, backdrop: str) -> PriceInfo | None`, `async check_key() -> tuple[bool, str]`, `static parse_prices(data: dict[str, Any]) -> PriceInfo | None`, `_parse_market(raw: Any) -> MarketPrice | None`. (Правка, одобрена после whole-branch review: таймаут 20→8, чтобы простой Satellite не подвешивал цикл монитора; цены в пайплайне тянутся параллельно.)
   - `tools/discover_satellite_api.py` — best-effort script that opens the @gift_satellite_bot webview via the MTProto session and prints the app URL and API endpoints found in its JS bundle.
 
 - [ ] **Step 1: Write failing tests**
@@ -1660,7 +1660,7 @@ git commit -m "Add in-bot login flow"
 **Interfaces:**
 - Consumes: `LoginFlow` (Task 7), `GiftSatelliteClient` (Task 4), `MenuSettings` (Task 1), `render_owner_message`/`format_price` (Task 3), `send_menu`/`send_settings_menu`/`send_account_menu` (Task 5), `api.send_message_to_user`/`api.get_me_phone` (Task 6).
 - Produces:
-  - `GiftMonitor.__init__` loads `self._menu_settings: MenuSettings` (storage or config defaults), keeps `self._pricing: GiftSatelliteClient | None` (built lazily when key+url known).
+  - `GiftMonitor.__init__` loads `self._menu_settings: MenuSettings` (storage or config defaults), keeps `self._pricing: GiftSatelliteClient | None` (built lazily when key+url known) and `self._pricing_credentials: tuple[str, str] | None` (кроссы ключ/URL, при смене — клиент пересоздаётся).
   - `GiftMonitor.run()` — after `await self.api.connect()`, runs `LoginFlow` when `not await self.api.is_authorized()`, returns quietly on `False`.
   - `send_pending_notifications()` — new pipeline: model filter → price fetch → price range filter → template render → owner PM → admin event summary.
   - `_filter_menu_state()` unchanged shape but carries new RuntimeFilters fields.
@@ -1921,11 +1921,18 @@ Add model filter helper and rewrite `send_pending_notifications()`:
             return None
         if not self._menu_settings.satellite_api_key or not self._menu_settings.satellite_api_url:
             return None
-        if self._pricing is None:
+        if self._pricing is None or self._pricing_credentials != (
+            self._menu_settings.satellite_api_key,
+            self._menu_settings.satellite_api_url,
+        ):
             self._pricing = GiftSatelliteClient(
                 self._menu_settings.satellite_api_key,
                 self._menu_settings.satellite_api_url,
                 insecure_ssl=self.config.bot_api_insecure_ssl,
+            )
+            self._pricing_credentials = (
+                self._menu_settings.satellite_api_key,
+                self._menu_settings.satellite_api_url,
             )
         try:
             return await self._pricing.fetch_price(
@@ -1941,6 +1948,7 @@ Add model filter helper and rewrite `send_pending_notifications()`:
 New pipeline (replace body of the for-loop in `send_pending_notifications`):
 
 ```python
+        pending: list[GiftEvent] = []
         for event in self.storage.pending_notifications():
             if self._runtime_filters.require_owner_username and not event.owner_username:
                 self.storage.mark_notified(event.slug)
@@ -1964,7 +1972,9 @@ New pipeline (replace body of the for-loop in `send_pending_notifications`):
                 self.storage.mark_notified(event.slug)
                 LOGGER.info("Пропуск %s: модель не подходит под фильтр", event.slug)
                 continue
-            price = await self._fetch_price_for(event)
+            pending.append(event)
+        prices = await asyncio.gather(*(self._fetch_price_for(event) for event in pending))
+        for event, price in zip(pending, prices):
             min_price = self._runtime_filters.min_price
             max_price = self._runtime_filters.max_price
             if price and price.markets:
@@ -1982,6 +1992,8 @@ New pipeline (replace body of the for-loop in `send_pending_notifications`):
             self.storage.mark_notified(event.slug)
             LOGGER.info("Уведомление обработано: %s", event.slug)
 ```
+
+(Правка, одобрена после whole-branch review: цены тянутся параллельно через `asyncio.gather` — последовательные fetch по 8s подвешивали цикл монитора при недоступном Satellite.)
 
 Add `_notify_owner_and_admin`:
 
