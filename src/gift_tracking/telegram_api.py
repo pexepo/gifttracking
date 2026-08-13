@@ -74,9 +74,43 @@ def _owner(result: Any, gift: types.StarGiftUnique) -> tuple[str | None, str | N
 class GiftTelegramApi:
     def __init__(self, api_id: int, api_hash: str, session: str) -> None:
         self.client = TelegramClient(session, api_id, api_hash)
+        self._known_users: dict[int, Any] = {}
+
+    async def connect(self) -> None:
+        await self.client.connect()
 
     async def start(self) -> None:
-        await self.client.start()
+        await self.connect()
+
+    async def is_authorized(self) -> bool:
+        return bool(await self.client.is_user_authorized())
+
+    async def send_code_request(self, phone: str) -> Any:
+        return await self.client.send_code_request(phone)
+
+    async def sign_in(self, phone: str, code: str, phone_code_hash: str) -> None:
+        await self.client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+
+    async def sign_in_password(self, password: str) -> None:
+        sign_in_password = getattr(self.client, "sign_in_password", None)
+        if sign_in_password is not None:
+            await sign_in_password(password)
+        else:
+            await self.client.sign_in(password=password)
+
+    async def get_me_phone(self) -> str | None:
+        me = await self.client.get_me()
+        return getattr(me, "phone", None)
+
+    def remember_owner(self, entity: Any) -> None:
+        if entity is not None and getattr(entity, "id", None) is not None:
+            self._known_users[int(entity.id)] = entity
+
+    async def send_message_to_user(self, user_id: int, text: str) -> None:
+        entity = self._known_users.get(user_id)
+        if entity is None:
+            raise ValueError(f"Нет данных о владельце {user_id}")
+        await self.client.send_message(entity, text)
 
     async def disconnect(self) -> None:
         await self.client.disconnect()
@@ -107,6 +141,13 @@ class GiftTelegramApi:
         if not isinstance(gift, types.StarGiftUnique):
             raise TypeError(f"{slug} не является уникальным подарком")
         owner_name, owner_username = _owner(result, gift)
+        peer = gift.owner_id
+        owner_user_id = None
+        if isinstance(peer, types.PeerUser):
+            owner_user_id = peer.user_id
+            entity = next((user for user in result.users if user.id == peer.user_id), None)
+            if entity:
+                self.remember_owner(entity)
         event = GiftEvent(
             slug=gift.slug,
             gift_id=gift.gift_id,
@@ -120,5 +161,6 @@ class GiftTelegramApi:
             availability_issued=gift.availability_issued,
             availability_total=gift.availability_total,
             detected_at=datetime.now(UTC),
+            owner_user_id=owner_user_id,
         )
         return event, result
