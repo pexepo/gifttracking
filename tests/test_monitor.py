@@ -320,6 +320,38 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 close_monitor(monitor)
 
+    async def test_toggle_owner_username_preserves_model_and_price_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+                monitor._runtime_filters = replace(
+                    monitor._runtime_filters,
+                    model_filter_enabled=True,
+                    model_filters=("Albino",),
+                    min_price=1.0,
+                    max_price=50.0,
+                )
+
+                await monitor._handle_callback_query(
+                    {
+                        "id": "cb-x",
+                        "data": "toggle_owner_username",
+                        "message": {"chat": {"id": 1}, "message_id": 77},
+                    }
+                )
+
+                self.assertTrue(monitor._runtime_filters.require_owner_username)
+                self.assertEqual(monitor._runtime_filters.model_filters, ("Albino",))
+                self.assertEqual(monitor._runtime_filters.max_price, 50.0)
+                self.assertEqual(
+                    monitor.storage.load_runtime_filters(), monitor._runtime_filters
+                )
+            finally:
+                close_monitor(monitor)
+
     async def test_skips_crafted_gap_after_retry_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(directory)

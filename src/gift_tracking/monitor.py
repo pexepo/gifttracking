@@ -597,19 +597,15 @@ class GiftMonitor:
                 chat_id=chat_id,
             )
         elif data == "toggle_owner_username":
-            self._runtime_filters = RuntimeFilters(
+            self._runtime_filters = replace(
+                self._runtime_filters,
                 require_owner_username=not self._runtime_filters.require_owner_username,
-                backdrop_filter_enabled=self._runtime_filters.backdrop_filter_enabled,
-                backdrop_filters=self._runtime_filters.backdrop_filters,
-                blocked_owner_username_substrings=self._runtime_filters.blocked_owner_username_substrings,
             )
             self._save_runtime_filters()
         elif data == "toggle_backdrop_filter" and self._runtime_filters.backdrop_filters:
-            self._runtime_filters = RuntimeFilters(
-                require_owner_username=self._runtime_filters.require_owner_username,
+            self._runtime_filters = replace(
+                self._runtime_filters,
                 backdrop_filter_enabled=not self._runtime_filters.backdrop_filter_enabled,
-                backdrop_filters=self._runtime_filters.backdrop_filters,
-                blocked_owner_username_substrings=self._runtime_filters.blocked_owner_username_substrings,
             )
             self._save_runtime_filters()
         elif data == "edit_backdrop_filters":
