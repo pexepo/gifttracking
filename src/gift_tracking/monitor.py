@@ -99,6 +99,7 @@ class GiftMonitor:
                 satellite_api_url=config.satellite_api_url,
             )
         self._pricing: GiftSatelliteClient | None = None
+        self._pricing_credentials: tuple[str, str] | None = None
         self._pending_edit: PendingEdit | None = None
 
     async def run(self) -> None:
@@ -267,11 +268,22 @@ class GiftMonitor:
             return None
         if not self._menu_settings.satellite_api_key or not self._menu_settings.satellite_api_url:
             return None
-        if self._pricing is None:
+        if self._pricing is None or (
+            self._pricing_credentials is not None
+            and self._pricing_credentials
+            != (
+                self._menu_settings.satellite_api_key,
+                self._menu_settings.satellite_api_url,
+            )
+        ):
             self._pricing = GiftSatelliteClient(
                 self._menu_settings.satellite_api_key,
                 self._menu_settings.satellite_api_url,
                 insecure_ssl=self.config.bot_api_insecure_ssl,
+            )
+            self._pricing_credentials = (
+                self._menu_settings.satellite_api_key,
+                self._menu_settings.satellite_api_url,
             )
         try:
             return await self._pricing.fetch_price(
@@ -284,6 +296,7 @@ class GiftMonitor:
             return None
 
     async def send_pending_notifications(self) -> None:
+        pending: list[GiftEvent] = []
         for event in self.storage.pending_notifications():
             if self._runtime_filters.require_owner_username and not event.owner_username:
                 self.storage.mark_notified(event.slug)
@@ -307,7 +320,9 @@ class GiftMonitor:
                 self.storage.mark_notified(event.slug)
                 LOGGER.info("Пропуск %s: модель не подходит под фильтр", event.slug)
                 continue
-            price = await self._fetch_price_for(event)
+            pending.append(event)
+        prices = await asyncio.gather(*(self._fetch_price_for(event) for event in pending))
+        for event, price in zip(pending, prices):
             min_price = self._runtime_filters.min_price
             max_price = self._runtime_filters.max_price
             if price and price.markets:

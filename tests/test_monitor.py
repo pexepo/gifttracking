@@ -1,8 +1,11 @@
+import asyncio
 import tempfile
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
+from unittest.mock import patch
 
 from telethon import errors
 
@@ -114,6 +117,38 @@ class FakePricing:
 
     async def check_key(self) -> tuple[bool, str]:
         return self.price is not None, "ok"
+
+
+class SlowPricing(FakePricing):
+    async def fetch_price(self, collection: str, model: str, backdrop: str):
+        await asyncio.sleep(0.05)
+        return await super().fetch_price(collection, model, backdrop)
+
+
+class RecordingPricing:
+    instances: list[tuple[str, str, bool, int]] = []
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        *,
+        insecure_ssl: bool = False,
+        timeout: int = 8,
+    ) -> None:
+        RecordingPricing.instances.append((api_key, base_url, insecure_ssl, timeout))
+
+    async def fetch_price(self, collection: str, model: str, backdrop: str):
+        return PriceInfo(
+            collection=collection,
+            model=model,
+            backdrop=backdrop,
+            markets=(MarketPrice("Tonnel", price_ton=9.5),),
+            fetched_at=datetime.now(UTC),
+        )
+
+    async def check_key(self) -> tuple[bool, str]:
+        return True, "ok"
 
 
 def close_monitor(monitor: GiftMonitor) -> None:
@@ -609,6 +644,82 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     monitor.storage.load_menu_settings(), monitor._menu_settings
                 )
+            finally:
+                close_monitor(monitor)
+
+    async def test_rebuilds_price_client_when_api_credentials_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+                monitor._menu_settings = replace(
+                    monitor._menu_settings,
+                    satellite_api_key="old",
+                    satellite_api_url="https://old.example.com",
+                    auto_price_enabled=True,
+                )
+                RecordingPricing.instances = []
+                with patch("gift_tracking.monitor.GiftSatelliteClient", RecordingPricing):
+                    await monitor._fetch_price_for(event(1, 1))
+                    monitor._menu_settings = replace(
+                        monitor._menu_settings,
+                        satellite_api_key="new",
+                        satellite_api_url="https://new.example.com",
+                    )
+                    await monitor._fetch_price_for(event(2, 2))
+
+                self.assertEqual(len(RecordingPricing.instances), 2)
+                self.assertEqual(
+                    RecordingPricing.instances[-1][:2],
+                    ("new", "https://new.example.com"),
+                )
+                self.assertEqual(
+                    monitor._pricing_credentials,
+                    ("new", "https://new.example.com"),
+                )
+            finally:
+                close_monitor(monitor)
+
+    async def test_fetches_prices_in_parallel_and_notifies_all(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+                monitor._pricing = SlowPricing(
+                    PriceInfo(
+                        collection="Plush Pepe",
+                        model="Pumpkin",
+                        backdrop="",
+                        markets=(MarketPrice("Tonnel", price_ton=9.5),),
+                        fetched_at=datetime.now(UTC),
+                    )
+                )
+                monitor._menu_settings = replace(
+                    monitor._menu_settings,
+                    satellite_api_key="k",
+                    satellite_api_url="https://api.example.com",
+                    auto_price_enabled=True,
+                )
+                for number in (1, 2, 3):
+                    monitor.storage.record_gift(event(number, number))
+
+                started = monotonic()
+                await monitor.send_pending_notifications()
+                elapsed = monotonic() - started
+
+                self.assertEqual(len(monitor._pricing.calls), 3)
+                price_texts = [
+                    text
+                    for text, _ in notifier.status_messages
+                    if "Цены:" in text and "9.5 TON" in text
+                ]
+                self.assertEqual(len(price_texts), 3)
+                self.assertEqual(len(monitor.storage.pending_notifications()), 0)
+                self.assertLess(elapsed, 0.12)
             finally:
                 close_monitor(monitor)
 

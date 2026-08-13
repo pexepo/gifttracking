@@ -39,7 +39,7 @@ class GiftSatelliteClient:
         base_url: str,
         *,
         insecure_ssl: bool = False,
-        timeout: int = 20,
+        timeout: int = 8,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
