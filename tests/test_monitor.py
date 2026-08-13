@@ -502,7 +502,7 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
 
             await monitor.send_pending_notifications()
 
-            self.assertEqual(notifier.sent, [])
+            self.assertEqual(notifier.status_messages, [])
             close_monitor(monitor)
 
 
