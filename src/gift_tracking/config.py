@@ -74,6 +74,8 @@ class Config:
     log_level: str
     bot_api_ca_file: Path | None = None
     bot_api_insecure_ssl: bool = False
+    satellite_api_key: str = ""
+    satellite_api_url: str = ""
 
     @classmethod
     def from_env(cls) -> Config:
@@ -138,4 +140,6 @@ class Config:
                 else None
             ),
             bot_api_insecure_ssl=_bool("BOT_API_INSECURE_SSL", False),
+            satellite_api_key=os.getenv("SATELLITE_API_KEY", "").strip(),
+            satellite_api_url=os.getenv("SATELLITE_API_URL", "").strip(),
         )

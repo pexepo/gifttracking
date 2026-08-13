@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +34,7 @@ class GiftEvent:
     availability_issued: int
     availability_total: int
     detected_at: datetime
+    owner_user_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -55,6 +56,7 @@ class GiftEvent:
             availability_issued=int(data["availability_issued"]),
             availability_total=int(data["availability_total"]),
             detected_at=datetime.fromisoformat(data["detected_at"]),
+            owner_user_id=data.get("owner_user_id"),
         )
 
 
@@ -64,12 +66,21 @@ class RuntimeFilters:
     backdrop_filter_enabled: bool
     backdrop_filters: tuple[str, ...]
     blocked_owner_username_substrings: tuple[str, ...]
+    model_filter_enabled: bool = False
+    model_filters: tuple[str, ...] = ()
+    min_price: float | None = None
+    max_price: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RuntimeFilters:
+        def optional_float(value: Any) -> float | None:
+            if value is None or value == "":
+                return None
+            return float(value)
+
         return cls(
             require_owner_username=bool(data.get("require_owner_username", False)),
             backdrop_filter_enabled=bool(data.get("backdrop_filter_enabled", False)),
@@ -77,4 +88,55 @@ class RuntimeFilters:
             blocked_owner_username_substrings=tuple(
                 data.get("blocked_owner_username_substrings", [])
             ),
+            model_filter_enabled=bool(data.get("model_filter_enabled", False)),
+            model_filters=tuple(data.get("model_filters", [])),
+            min_price=optional_float(data.get("min_price")),
+            max_price=optional_float(data.get("max_price")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MarketPrice:
+    market: str
+    price_ton: float | None = None
+    price_stars: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PriceInfo:
+    collection: str
+    model: str
+    backdrop: str
+    markets: tuple[MarketPrice, ...]
+    fetched_at: datetime
+
+
+DEFAULT_OWNER_TEMPLATE = (
+    "Здравствуйте! Хочу купить у вас {title} #{number}. "
+    "Модель: {model}, фон: {backdrop}. Цена: {price}. {link}"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class MenuSettings:
+    DEFAULT_OWNER_TEMPLATE: ClassVar[str] = DEFAULT_OWNER_TEMPLATE
+    owner_message_template: str = DEFAULT_OWNER_TEMPLATE
+    satellite_api_key: str = ""
+    satellite_api_url: str = ""
+    auto_price_enabled: bool = True
+    send_to_owner_enabled: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MenuSettings:
+        return cls(
+            owner_message_template=str(
+                data.get("owner_message_template", DEFAULT_OWNER_TEMPLATE)
+            ),
+            satellite_api_key=str(data.get("satellite_api_key", "")),
+            satellite_api_url=str(data.get("satellite_api_url", "")),
+            auto_price_enabled=bool(data.get("auto_price_enabled", True)),
+            send_to_owner_enabled=bool(data.get("send_to_owner_enabled", True)),
         )
