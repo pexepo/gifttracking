@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import Collection, GiftEvent, RuntimeFilters
+from .models import Collection, GiftEvent, MenuSettings, RuntimeFilters
 
 
 class Storage:
@@ -154,6 +154,27 @@ class Storage:
                 updated_at = CURRENT_TIMESTAMP
             """,
             ("runtime_filters", json.dumps(filters.to_dict(), ensure_ascii=False)),
+        )
+        self.connection.commit()
+
+    def load_menu_settings(self) -> MenuSettings | None:
+        row = self.connection.execute(
+            "SELECT value FROM settings WHERE key = ?", ("menu_settings",)
+        ).fetchone()
+        if row is None:
+            return None
+        return MenuSettings.from_dict(json.loads(row["value"]))
+
+    def save_menu_settings(self, settings: MenuSettings) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO settings(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            ("menu_settings", json.dumps(settings.to_dict(), ensure_ascii=False)),
         )
         self.connection.commit()
 

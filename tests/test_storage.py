@@ -3,7 +3,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from gift_tracking.models import Collection, GiftEvent, RuntimeFilters
+from gift_tracking.models import Collection, GiftEvent, MenuSettings, RuntimeFilters
 from gift_tracking.storage import Storage
 
 
@@ -47,6 +47,21 @@ class StorageTests(unittest.TestCase):
             )
             storage.save_runtime_filters(filters)
             self.assertEqual(storage.load_runtime_filters(), filters)
+            storage.close()
+
+    def test_persists_menu_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Storage(Path(directory) / "state.sqlite3")
+            self.assertIsNone(storage.load_menu_settings())
+            settings = MenuSettings(
+                owner_message_template="Куплю {title} за {price}",
+                satellite_api_key="k",
+                satellite_api_url="https://api.example.com",
+                auto_price_enabled=False,
+                send_to_owner_enabled=True,
+            )
+            storage.save_menu_settings(settings)
+            self.assertEqual(storage.load_menu_settings(), settings)
             storage.close()
 
     def test_tracks_missing_gift_attempts(self) -> None:
