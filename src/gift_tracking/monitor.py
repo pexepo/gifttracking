@@ -457,8 +457,6 @@ class GiftMonitor:
         if not isinstance(chat, dict) or not isinstance(text, str):
             return
         chat_id = str(chat.get("id"))
-        if chat_id != self.config.notify_chat_id:
-            return
         if text in {"/start", "/filters", "/menu"}:
             if text == "/menu":
                 await self.notifier.send_menu(chat_id=chat_id)
@@ -489,8 +487,6 @@ class GiftMonitor:
         if not isinstance(chat, dict) or not isinstance(message_id, int):
             return
         chat_id = str(chat.get("id"))
-        if chat_id != self.config.notify_chat_id:
-            return
 
         answer = "Фильтры обновлены"
         if data == "menu_main":

@@ -355,6 +355,22 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 close_monitor(monitor)
 
+    async def test_answers_menu_from_any_chat(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+
+                await monitor._handle_message(
+                    {"chat": {"id": 77}, "text": "/menu"}
+                )
+
+                self.assertEqual(notifier.menus, [("77",)])
+            finally:
+                close_monitor(monitor)
+
     async def test_toggle_owner_username_preserves_model_and_price_filters(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(directory)
