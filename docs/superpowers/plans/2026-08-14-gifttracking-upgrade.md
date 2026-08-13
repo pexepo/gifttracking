@@ -1856,7 +1856,7 @@ Helper: `record_gift_with_owner(monitor, number)` and upgrade `make_config` (new
 
             await monitor.send_pending_notifications()
 
-            self.assertEqual(notifier.sent, [])
+            self.assertEqual(notifier.status_messages, [])
             close_monitor(monitor)
 ```
 
