@@ -50,6 +50,11 @@ def _blocked_owner_username(
     return None
 
 
+def _matches_blacklisted_collection(title: str, blacklisted: tuple[str, ...]) -> bool:
+    folded = title.casefold()
+    return any(part.casefold() in folded for part in blacklisted)
+
+
 def _split_csv(value: str) -> tuple[str, ...]:
     return tuple(
         dict.fromkeys(part.strip().casefold() for part in value.split(",") if part.strip())
@@ -254,15 +259,6 @@ class GiftMonitor:
         initialized = replace(collection, last_issued=start - 1)
         await self.check_collection(initialized)
 
-    def _matches_models(self, event: GiftEvent) -> bool:
-        if not self._runtime_filters.model_filter_enabled or not self._runtime_filters.model_filters:
-            return True
-        return any(
-            getattr(attribute, "name", "").casefold() in self._runtime_filters.model_filters
-            for attribute in event.attributes
-            if attribute.kind == "model"
-        )
-
     async def _fetch_price_for(self, event: GiftEvent) -> PriceInfo | None:
         if not self._menu_settings.auto_price_enabled:
             return None
@@ -316,9 +312,11 @@ class GiftMonitor:
                 self.storage.mark_notified(event.slug)
                 LOGGER.info("Пропуск %s: фон не подходит под фильтр", event.slug)
                 continue
-            if not self._matches_models(event):
+            if _matches_blacklisted_collection(
+                event.title, self._runtime_filters.blacklisted_collections
+            ):
                 self.storage.mark_notified(event.slug)
-                LOGGER.info("Пропуск %s: модель не подходит под фильтр", event.slug)
+                LOGGER.info("Пропуск %s: коллекция в блеклисте", event.slug)
                 continue
             pending.append(event)
         prices = await asyncio.gather(*(self._fetch_price_for(event) for event in pending))
@@ -384,8 +382,8 @@ class GiftMonitor:
             backdrop_filter_enabled=self._runtime_filters.backdrop_filter_enabled,
             backdrop_filters=self._runtime_filters.backdrop_filters,
             blocked_owner_username_substrings=self._runtime_filters.blocked_owner_username_substrings,
-            model_filter_enabled=self._runtime_filters.model_filter_enabled,
-            model_filters=self._runtime_filters.model_filters,
+            notifications_enabled=self._runtime_filters.notifications_enabled,
+            blacklisted_collections=self._runtime_filters.blacklisted_collections,
             min_price=self._runtime_filters.min_price,
             max_price=self._runtime_filters.max_price,
         )
@@ -577,17 +575,13 @@ class GiftMonitor:
             )
             self._save_menu_settings()
             answer = "Настройки обновлены"
-        elif data == "toggle_model_filter":
-            self._runtime_filters = replace(
-                self._runtime_filters,
-                model_filter_enabled=not self._runtime_filters.model_filter_enabled,
+        elif data == "edit_blacklisted_collections":
+            self._pending_edit = PendingEdit(
+                "blacklisted_collections", menu_message_id=message_id
             )
-            self._save_runtime_filters()
-        elif data == "edit_model_filters":
-            self._pending_edit = PendingEdit("model_filters", menu_message_id=message_id)
-            answer = "Пришли модели через запятую"
+            answer = "Пришли блеклист коллекций"
             await self.notifier.send_text(
-                "Отправь список моделей через запятую. Пример: <code>Albino,Pumpkin</code>\n"
+                "Отправь названия коллекций через запятую. Пример: <code>Plush Pepe,Astral Shard</code>\n"
                 "Пустое сообщение или <code>none</code> очистит список.\nДля отмены: /cancel",
                 chat_id=chat_id,
             )
@@ -649,11 +643,10 @@ class GiftMonitor:
         elif self._pending_edit is None and data in {
             "toggle_owner_username",
             "toggle_backdrop_filter",
-            "toggle_model_filter",
             "refresh_filters",
             "edit_backdrop_filters",
             "edit_blocked_usernames",
-            "edit_model_filters",
+            "edit_blacklisted_collections",
             "edit_min_price",
             "edit_max_price",
         }:
@@ -669,13 +662,12 @@ class GiftMonitor:
         values = () if not normalized or normalized.casefold() == "none" else _split_csv(normalized)
         if pending_edit is None:
             return
-        if pending_edit.kind == "model_filters":
+        if pending_edit.kind == "blacklisted_collections":
             self._runtime_filters = replace(
                 self._runtime_filters,
-                model_filter_enabled=bool(values),
-                model_filters=values,
+                blacklisted_collections=values,
             )
-            confirmation = "Фильтр по моделям обновлён."
+            confirmation = "Блеклист коллекций обновлён."
         elif pending_edit.kind == "min_price":
             price = None if not normalized else _parse_price(normalized)
             if normalized and price is None:

@@ -371,7 +371,7 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 close_monitor(monitor)
 
-    async def test_toggle_owner_username_preserves_model_and_price_filters(self) -> None:
+    async def test_toggle_owner_username_preserves_blacklist_and_price_filters(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(directory)
             monitor = GiftMonitor(config)
@@ -380,8 +380,7 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
                 monitor.notifier = notifier
                 monitor._runtime_filters = replace(
                     monitor._runtime_filters,
-                    model_filter_enabled=True,
-                    model_filters=("Albino",),
+                    blacklisted_collections=("Albino",),
                     min_price=1.0,
                     max_price=50.0,
                 )
@@ -395,7 +394,9 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 self.assertTrue(monitor._runtime_filters.require_owner_username)
-                self.assertEqual(monitor._runtime_filters.model_filters, ("Albino",))
+                self.assertEqual(
+                    monitor._runtime_filters.blacklisted_collections, ("Albino",)
+                )
                 self.assertEqual(monitor._runtime_filters.max_price, 50.0)
                 self.assertEqual(
                     monitor.storage.load_runtime_filters(), monitor._runtime_filters
@@ -538,24 +539,68 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(monitor.storage.pending_notifications(), [])
             close_monitor(monitor)
 
-    async def test_model_filter_skips_non_matching(self) -> None:
+    async def test_blacklist_skips_collection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = make_config(directory)
             monitor = GiftMonitor(config)
-            monitor._runtime_filters = replace(
-                monitor._runtime_filters,
-                model_filter_enabled=True,
-                model_filters=("Albino",),
-            )
-            gift = event(2, 2)
-            monitor.storage.record_gift(gift)
-            notifier = FakeNotifier()
-            monitor.notifier = notifier
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+                monitor._runtime_filters = replace(
+                    monitor._runtime_filters,
+                    blacklisted_collections=("Plush Pepe",),
+                )
+                for number in (1, 2):
+                    monitor.storage.record_gift(event(number, number))
+                await monitor.send_pending_notifications()
+                self.assertEqual(len(monitor.storage.pending_notifications()), 0)
+                self.assertEqual(len(notifier.sent), 0)
+                self.assertEqual(len(notifier.status_messages), 0)
+            finally:
+                close_monitor(monitor)
 
-            await monitor.send_pending_notifications()
+    async def test_blacklist_matches_substring_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+                monitor._runtime_filters = replace(
+                    monitor._runtime_filters,
+                    blacklisted_collections=("PLUSH",),
+                )
+                monitor.storage.record_gift(event(1, 1))
+                await monitor.send_pending_notifications()
+                self.assertEqual(len(monitor.storage.pending_notifications()), 0)
+                self.assertEqual(len(notifier.status_messages), 0)
+            finally:
+                close_monitor(monitor)
 
-            self.assertEqual(notifier.status_messages, [])
-            close_monitor(monitor)
+    async def test_edits_blacklisted_collections_from_message(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = make_config(directory)
+            monitor = GiftMonitor(config)
+            try:
+                notifier = FakeNotifier()
+                monitor.notifier = notifier
+                await monitor._handle_callback_query(
+                    {
+                        "id": "cb1",
+                        "data": "edit_blacklisted_collections",
+                        "message": {"chat": {"id": 1}, "message_id": 77},
+                    }
+                )
+                await monitor._handle_message(
+                    {"chat": {"id": 1}, "text": "Plush Pepe, Astral Shard"}
+                )
+                self.assertEqual(
+                    monitor._runtime_filters.blacklisted_collections,
+                    ("plush pepe", "astral shard"),
+                )
+                self.assertEqual(monitor._runtime_filters.notifications_enabled, True)
+            finally:
+                close_monitor(monitor)
 
     async def test_price_range_skips_outside(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

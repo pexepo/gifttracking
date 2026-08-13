@@ -62,6 +62,41 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("bank, storage", text)
         self.assertIn("coral red", text)
 
+    def test_filter_menu_shows_blacklist(self) -> None:
+        state = FilterMenuState(
+            owner_username_required=True,
+            backdrop_filter_enabled=False,
+            backdrop_filters=(),
+            blocked_owner_username_substrings=(),
+            blacklisted_collections=("Plush Pepe",),
+        )
+        from gift_tracking.notifier import BotNotifier
+
+        text = BotNotifier._filter_menu_text(state)
+        self.assertIn("Коллекции: <b>блеклист: <code>Plush Pepe</code></b>", text)
+        self.assertNotIn("Модели", text)
+
+    def test_filter_menu_keyboard_has_blacklist_and_no_models(self) -> None:
+        state = FilterMenuState(
+            owner_username_required=True,
+            backdrop_filter_enabled=False,
+            backdrop_filters=(),
+            blocked_owner_username_substrings=(),
+            blacklisted_collections=("Plush Pepe",),
+        )
+        from gift_tracking.notifier import BotNotifier
+
+        keyboard = BotNotifier._filter_menu_keyboard(state)
+        data = [
+            button["callback_data"]
+            for row in keyboard["inline_keyboard"]
+            for button in row
+        ]
+        self.assertIn("edit_blacklisted_collections", data)
+        self.assertNotIn("edit_model_filters", data)
+        self.assertNotIn("toggle_model_filter", data)
+        self.assertNotIn("code_noop", data)
+
     def test_get_updates_timeout_is_treated_as_long_poll_timeout(self) -> None:
         notifier = BotNotifier("token", "1", "Europe/Minsk")
         with patch.object(notifier, "_call", side_effect=BotLongPollTimeout("Long poll timeout")):

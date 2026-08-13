@@ -20,8 +20,8 @@ class RuntimeFiltersTests(unittest.TestCase):
                 "blocked_owner_username_substrings": ["bank"],
             }
         )
-        self.assertFalse(filters.model_filter_enabled)
-        self.assertEqual(filters.model_filters, ())
+        self.assertEqual(filters.blacklisted_collections, ())
+        self.assertTrue(filters.notifications_enabled)
         self.assertIsNone(filters.min_price)
         self.assertIsNone(filters.max_price)
 
@@ -31,12 +31,40 @@ class RuntimeFiltersTests(unittest.TestCase):
             backdrop_filter_enabled=True,
             backdrop_filters=("coral red",),
             blocked_owner_username_substrings=("bank",),
-            model_filter_enabled=True,
-            model_filters=("Albino", "Pumpkin"),
+            notifications_enabled=False,
+            blacklisted_collections=("Plush Pepe",),
             min_price=1.5,
             max_price=100.0,
         )
         self.assertEqual(RuntimeFilters.from_dict(filters.to_dict()), filters)
+
+    def test_runtime_filters_new_shape(self) -> None:
+        state = RuntimeFilters(
+            require_owner_username=True,
+            backdrop_filter_enabled=False,
+            backdrop_filters=("Coral Red",),
+            blocked_owner_username_substrings=("bank",),
+            blacklisted_collections=("Plush Pepe",),
+        )
+        self.assertTrue(state.notifications_enabled)
+        self.assertEqual(state.blacklisted_collections, ("Plush Pepe",))
+        self.assertNotIn("model_filter_enabled", state.to_dict())
+        self.assertNotIn("model_filters", state.to_dict())
+
+    def test_runtime_filters_from_dict_backward_compatible(self) -> None:
+        state = RuntimeFilters.from_dict(
+            {
+                "require_owner_username": True,
+                "backdrop_filter_enabled": False,
+                "backdrop_filters": [],
+                "blocked_owner_username_substrings": ["bank"],
+                "model_filter_enabled": True,
+                "model_filters": ["Albino"],
+            }
+        )
+        self.assertEqual(state.blacklisted_collections, ())
+        self.assertTrue(state.notifications_enabled)
+        self.assertEqual(RuntimeFilters.from_dict({}).notifications_enabled, True)
 
 
 class PriceInfoTests(unittest.TestCase):

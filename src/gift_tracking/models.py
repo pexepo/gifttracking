@@ -66,8 +66,8 @@ class RuntimeFilters:
     backdrop_filter_enabled: bool
     backdrop_filters: tuple[str, ...]
     blocked_owner_username_substrings: tuple[str, ...]
-    model_filter_enabled: bool = False
-    model_filters: tuple[str, ...] = ()
+    notifications_enabled: bool = True
+    blacklisted_collections: tuple[str, ...] = ()
     min_price: float | None = None
     max_price: float | None = None
 
@@ -88,8 +88,8 @@ class RuntimeFilters:
             blocked_owner_username_substrings=tuple(
                 data.get("blocked_owner_username_substrings", [])
             ),
-            model_filter_enabled=bool(data.get("model_filter_enabled", False)),
-            model_filters=tuple(data.get("model_filters", [])),
+            notifications_enabled=bool(data.get("notifications_enabled", True)),
+            blacklisted_collections=tuple(data.get("blacklisted_collections", [])),
             min_price=optional_float(data.get("min_price")),
             max_price=optional_float(data.get("max_price")),
         )
