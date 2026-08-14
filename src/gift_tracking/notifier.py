@@ -40,6 +40,15 @@ class FilterMenuState:
     max_price: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class OwnerTargets:
+    min_value_ton: float = 0.0
+    min_reputation: int = 0
+    max_reputation: int = 2
+    min_gifts: int = 1
+    max_gifts: int = 5
+
+
 def format_notification(event: GiftEvent, timezone: str) -> str:
     local_time = event.detected_at.astimezone(ZoneInfo(timezone))
     owner = html.escape(event.owner_name or "скрыт")
@@ -357,7 +366,7 @@ class BotNotifier:
         owner_state = "✅" if settings.send_to_owner_enabled else "⛔️"
         return {
             "inline_keyboard": [
-                [{"text": "✏️ Шаблон сообщения", "callback_data": "edit_owner_template"}],
+                [{"text": "✏️ Шаблоны сообщений", "callback_data": "edit_owner_templates"}],
                 [{"text": "🔑 API-ключ", "callback_data": "edit_api_key"}],
                 [{"text": "⚠️ Проверить ключ", "callback_data": "check_api_key"}],
                 [{"text": "🌐 URL API", "callback_data": "edit_api_url"}],
@@ -366,6 +375,46 @@ class BotNotifier:
                 [{"text": "⬅️ Назад", "callback_data": "menu_main"}],
             ]
         }
+
+    @staticmethod
+    def templates_menu_text(settings: MenuSettings) -> str:
+        lines = ["✏️ <b>Шаблоны сообщений владельцу</b>", ""]
+        if not settings.owner_message_templates:
+            lines.append("Шаблонов пока нет.")
+        for index, template in enumerate(
+            settings.owner_message_templates, start=1
+        ):
+            preview = " ".join(template.split())
+            if len(preview) > 80:
+                preview = preview[:77] + "..."
+            lines.append(f"{index}. <code>{html.escape(preview)}</code>")
+        lines.extend(
+            [
+                "",
+                "Плейсхолдеры: {title}, {number}, {model}, {backdrop}, {price}, {link}",
+            ]
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def templates_menu_keyboard(settings: MenuSettings) -> dict[str, object]:
+        rows: list[list[dict[str, str]]] = []
+        for index in range(len(settings.owner_message_templates)):
+            rows.append(
+                [
+                    {
+                        "text": f"✏️ Изменить {index + 1}",
+                        "callback_data": f"edit_owner_template_{index}",
+                    },
+                    {
+                        "text": f"🗑 Удалить {index + 1}",
+                        "callback_data": f"delete_owner_template_{index}",
+                    },
+                ]
+            )
+        rows.append([{"text": "➕ Добавить шаблон", "callback_data": "add_owner_template"}])
+        rows.append([{"text": "⬅️ Назад", "callback_data": "menu_settings"}])
+        return {"inline_keyboard": rows}
 
     @staticmethod
     def account_menu_keyboard(authorized: bool) -> dict[str, object]:
@@ -380,24 +429,51 @@ class BotNotifier:
         return {"inline_keyboard": rows}
 
     @staticmethod
-    def _settings_menu_text(settings: MenuSettings) -> str:
-        return "\n".join(
+    def _settings_menu_text(
+        settings: MenuSettings, owner_targets: OwnerTargets | None = None
+    ) -> str:
+        templates = settings.owner_message_templates
+        preview = " ".join(templates[0].split()) if templates else ""
+        if len(preview) > 60:
+            preview = preview[:57] + "..."
+        lines = [
+            "🛠 <b>Настройки</b>",
+            "",
+            "Шаблонов владельцу: <b>" + str(len(templates)) + "</b>",
+        ]
+        if preview:
+            lines.append(f"Текст: <code>{html.escape(preview)}</code>")
+        lines.extend(
             [
-                "🛠 <b>Настройки</b>",
-                "",
-                "Шаблон владельцу:",
-                f"<code>{html.escape(settings.owner_message_template)}</code>",
                 "",
                 "API-ключ: "
                 + ("<b>задан</b>" if settings.satellite_api_key else "<b>не задан</b>"),
                 "URL API: <b>"
-                + (html.escape(settings.satellite_api_url) if settings.satellite_api_url else "не задан")
+                + (
+                    html.escape(settings.satellite_api_url)
+                    if settings.satellite_api_url
+                    else "не задан"
+                )
                 + "</b>",
                 "Авто-цена: " + ("<b>вкл</b>" if settings.auto_price_enabled else "<b>выкл</b>"),
                 "Отправка владельцу: "
                 + ("<b>вкл</b>" if settings.send_to_owner_enabled else "<b>выкл</b>"),
             ]
         )
+        if owner_targets is not None:
+            value_line = "не ограничен"
+            if owner_targets.min_value_ton > 0:
+                value_line = f"от {owner_targets.min_value_ton:g} TON"
+            lines.extend(
+                [
+                    "",
+                    "Целевые владельцы:",
+                    f"Апгрейд подарка: <b>{value_line}</b>",
+                    f"Репутация в ТГ: <b>{owner_targets.min_reputation}–{owner_targets.max_reputation}</b>",
+                    f"Подарков в профиле: <b>{owner_targets.min_gifts}–{owner_targets.max_gifts}</b>",
+                ]
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _account_menu_text(authorized: bool, phone: str | None) -> str:
@@ -443,24 +519,54 @@ class BotNotifier:
         )
 
     async def send_settings_menu(
-        self, settings: MenuSettings, *, chat_id: str | None = None
+        self,
+        settings: MenuSettings,
+        owner_targets: OwnerTargets | None = None,
+        *,
+        chat_id: str | None = None,
     ) -> dict[str, object]:
         return await self.send_text(
-            self._settings_menu_text(settings),
+            self._settings_menu_text(settings, owner_targets),
             keyboard=self.settings_menu_keyboard(settings),
             chat_id=chat_id,
         )
 
     async def update_settings_menu(
+        self,
+        chat_id: str,
+        message_id: int,
+        settings: MenuSettings,
+        owner_targets: OwnerTargets | None = None,
+    ) -> None:
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": self._settings_menu_text(settings, owner_targets),
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+            "reply_markup": self.settings_menu_keyboard(settings),
+        }
+        await asyncio.to_thread(self._call, "editMessageText", payload)
+
+    async def send_templates_menu(
+        self, settings: MenuSettings, *, chat_id: str | None = None
+    ) -> dict[str, object]:
+        return await self.send_text(
+            self.templates_menu_text(settings),
+            keyboard=self.templates_menu_keyboard(settings),
+            chat_id=chat_id,
+        )
+
+    async def update_templates_menu(
         self, chat_id: str, message_id: int, settings: MenuSettings
     ) -> None:
         payload = {
             "chat_id": chat_id,
             "message_id": message_id,
-            "text": self._settings_menu_text(settings),
+            "text": self.templates_menu_text(settings),
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
-            "reply_markup": self.settings_menu_keyboard(settings),
+            "reply_markup": self.templates_menu_keyboard(settings),
         }
         await asyncio.to_thread(self._call, "editMessageText", payload)
 

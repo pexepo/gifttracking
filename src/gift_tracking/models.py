@@ -120,23 +120,32 @@ DEFAULT_OWNER_TEMPLATE = (
 @dataclass(frozen=True, slots=True)
 class MenuSettings:
     DEFAULT_OWNER_TEMPLATE: ClassVar[str] = DEFAULT_OWNER_TEMPLATE
-    owner_message_template: str = DEFAULT_OWNER_TEMPLATE
+    MAX_OWNER_TEMPLATES: ClassVar[int] = 10
+    owner_message_templates: tuple[str, ...] = (DEFAULT_OWNER_TEMPLATE,)
     satellite_api_key: str = ""
     satellite_api_url: str = ""
     auto_price_enabled: bool = True
-    send_to_owner_enabled: bool = True
+    send_to_owner_enabled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MenuSettings:
+        templates = data.get("owner_message_templates")
+        if not templates:
+            legacy = data.get("owner_message_template")
+            if legacy:
+                templates = (str(legacy),)
+        if not templates:
+            templates = (DEFAULT_OWNER_TEMPLATE,)
         return cls(
-            owner_message_template=str(
-                data.get("owner_message_template", DEFAULT_OWNER_TEMPLATE)
-            ),
+            owner_message_templates=tuple(
+                str(template).strip() for template in templates if str(template).strip()
+            )
+            or (DEFAULT_OWNER_TEMPLATE,),
             satellite_api_key=str(data.get("satellite_api_key", "")),
             satellite_api_url=str(data.get("satellite_api_url", "")),
             auto_price_enabled=bool(data.get("auto_price_enabled", True)),
-            send_to_owner_enabled=bool(data.get("send_to_owner_enabled", True)),
+            send_to_owner_enabled=bool(data.get("send_to_owner_enabled", False)),
         )

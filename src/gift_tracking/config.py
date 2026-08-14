@@ -53,6 +53,32 @@ def _bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} должна быть числом") from exc
+    if value < 0:
+        raise ConfigError(f"{name} должна быть не меньше 0")
+    return value
+
+
+def _optional_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} должна быть целым числом") from exc
+    if value < 0:
+        raise ConfigError(f"{name} должна быть не меньше 0")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     api_id: int
@@ -76,6 +102,11 @@ class Config:
     bot_api_insecure_ssl: bool = False
     satellite_api_key: str = ""
     satellite_api_url: str = ""
+    owner_min_value_ton: float = 0.0
+    owner_min_reputation: int = 0
+    owner_max_reputation: int = 2
+    owner_min_gifts: int = 1
+    owner_max_gifts: int = 5
 
     @classmethod
     def from_env(cls) -> Config:
@@ -142,4 +173,9 @@ class Config:
             bot_api_insecure_ssl=_bool("BOT_API_INSECURE_SSL", False),
             satellite_api_key=os.getenv("SATELLITE_API_KEY", "").strip(),
             satellite_api_url=os.getenv("SATELLITE_API_URL", "").strip(),
+            owner_min_value_ton=_optional_float("OWNER_MIN_VALUE_TON", 0.0),
+            owner_min_reputation=_optional_int("OWNER_MIN_REPUTATION", 0),
+            owner_max_reputation=_optional_int("OWNER_MAX_REPUTATION", 2),
+            owner_min_gifts=_optional_int("OWNER_MIN_GIFTS", 1),
+            owner_max_gifts=_optional_int("OWNER_MAX_GIFTS", 5),
         )

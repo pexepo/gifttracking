@@ -50,6 +50,31 @@ class ConfigTests(unittest.TestCase):
             ("bank", "storage", "market"),
         )
 
+    def test_owner_targeting_defaults_and_overrides(self) -> None:
+        with patch.dict(os.environ, {**BASE_ENV}, clear=True), patch(
+            "gift_tracking.config.load_dotenv"
+        ):
+            config = Config.from_env()
+        self.assertEqual(config.owner_min_value_ton, 0.0)
+        self.assertEqual(config.owner_min_reputation, 0)
+        self.assertEqual(config.owner_max_reputation, 2)
+        self.assertEqual(config.owner_min_gifts, 1)
+        self.assertEqual(config.owner_max_gifts, 5)
+
+        env = {
+            **BASE_ENV,
+            "OWNER_MIN_VALUE_TON": "250.5",
+            "OWNER_MAX_REPUTATION": "3",
+            "OWNER_MAX_GIFTS": "10",
+        }
+        with patch.dict(os.environ, env, clear=True), patch(
+            "gift_tracking.config.load_dotenv"
+        ):
+            config = Config.from_env()
+        self.assertEqual(config.owner_min_value_ton, 250.5)
+        self.assertEqual(config.owner_max_reputation, 3)
+        self.assertEqual(config.owner_max_gifts, 10)
+
     def test_missing_required_value(self) -> None:
         with (
             patch.dict(os.environ, {}, clear=True),

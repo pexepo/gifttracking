@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 from dataclasses import dataclass
 from dataclasses import replace
 from time import monotonic
@@ -16,6 +17,7 @@ from .notifier import (
     BotNotifier,
     FilterMenuState,
     NotificationError,
+    OwnerTargets,
     attribute_value,
     format_notification,
     format_price,
@@ -72,6 +74,7 @@ def _parse_price(value: str) -> float | None:
 class PendingEdit:
     kind: str
     menu_message_id: int | None = None
+    index: int | None = None
 
 
 class GiftMonitor:
@@ -106,6 +109,13 @@ class GiftMonitor:
         self._pricing: GiftSatelliteClient | None = None
         self._pricing_credentials: tuple[str, str] | None = None
         self._pending_edit: PendingEdit | None = None
+        self._owner_targets = OwnerTargets(
+            min_value_ton=config.owner_min_value_ton,
+            min_reputation=config.owner_min_reputation,
+            max_reputation=config.owner_max_reputation,
+            min_gifts=config.owner_min_gifts,
+            max_gifts=config.owner_max_gifts,
+        )
 
     async def run(self) -> None:
         await self.api.connect()
@@ -340,20 +350,57 @@ class GiftMonitor:
             self.storage.mark_notified(event.slug)
             LOGGER.info("Уведомление обработано: %s", event.slug)
 
+    async def _owner_pm_reason(self, event: GiftEvent, price: PriceInfo | None) -> str | None:
+        targets = self._owner_targets
+        if targets.min_value_ton > 0:
+            lowest = None
+            if price is not None and price.markets:
+                ton_values = [
+                    market.price_ton
+                    for market in price.markets
+                    if market.price_ton is not None
+                ]
+                if ton_values:
+                    lowest = min(ton_values)
+            if lowest is None:
+                return f"цена неизвестна (нужно от {targets.min_value_ton:g} TON)"
+            if lowest < targets.min_value_ton:
+                return (
+                    f"цена {lowest:g} TON (нужно от {targets.min_value_ton:g} TON)"
+                )
+        if event.owner_user_id is None:
+            return "нет user_id владельца"
+        level, gifts_count = await self.api.get_owner_profile(event.owner_user_id)
+        if level is None or gifts_count is None:
+            return "профиль владельца недоступен"
+        if not (targets.min_reputation <= level <= targets.max_reputation):
+            return (
+                f"репутация в ТГ {level} "
+                f"(нужно {targets.min_reputation}–{targets.max_reputation})"
+            )
+        if not (targets.min_gifts <= gifts_count <= targets.max_gifts):
+            return (
+                f"подарков в профиле {gifts_count} "
+                f"(нужно {targets.min_gifts}–{targets.max_gifts})"
+            )
+        return None
+
     async def _notify_owner_and_admin(self, event: GiftEvent, price: PriceInfo | None) -> None:
         owner_status = None
-        if (
-            self._menu_settings.send_to_owner_enabled
-            and event.owner_user_id is not None
-        ):
-            template = self._menu_settings.owner_message_template
-            text = render_owner_message(template, event, price)
-            try:
-                await self.api.send_message_to_user(event.owner_user_id, text)
-                owner_status = "✅ сообщение владельцу отправлено"
-            except (errors.RPCError, ValueError) as exc:
-                owner_status = f"❌ владельцу не отправлено: {exc}"
-                LOGGER.warning("Не удалось написать владельцу %s: %s", event.slug, exc)
+        if self._menu_settings.send_to_owner_enabled and event.owner_user_id is not None:
+            reason = await self._owner_pm_reason(event, price)
+            if reason is not None:
+                owner_status = f"⛔️ владельцу не отправлено: {reason}"
+                LOGGER.info("Пропуск PM владельцу %s: %s", event.slug, reason)
+            else:
+                template = random.choice(self._menu_settings.owner_message_templates)
+                text = render_owner_message(template, event, price)
+                try:
+                    await self.api.send_message_to_user(event.owner_user_id, text)
+                    owner_status = "✅ сообщение владельцу отправлено"
+                except (errors.RPCError, ValueError) as exc:
+                    owner_status = f"❌ владельцу не отправлено: {exc}"
+                    LOGGER.warning("Не удалось написать владельцу %s: %s", event.slug, exc)
         price_line = ""
         if price is not None:
             price_line = f"\nЦены: {format_price(price)}"
@@ -392,8 +439,11 @@ class GiftMonitor:
 
     def _with_menu_settings(self, **changes: object) -> MenuSettings:
         return MenuSettings(
-            owner_message_template=str(
-                changes.get("owner_message_template", self._menu_settings.owner_message_template)
+            owner_message_templates=tuple(
+                changes.get(
+                    "owner_message_templates",
+                    self._menu_settings.owner_message_templates,
+                )
             ),
             satellite_api_key=str(
                 changes.get("satellite_api_key", self._menu_settings.satellite_api_key)
@@ -464,7 +514,9 @@ class GiftMonitor:
                 await self.notifier.send_filter_menu(self._filter_menu_state(), chat_id=chat_id)
             return
         if text == "/settings":
-            await self.notifier.send_settings_menu(self._menu_settings, chat_id=chat_id)
+            await self.notifier.send_settings_menu(
+                self._menu_settings, self._owner_targets, chat_id=chat_id
+            )
             return
         if text == "/cancel" and self._pending_edit is not None:
             self._pending_edit = None
@@ -498,7 +550,9 @@ class GiftMonitor:
             await self.notifier.answer_callback_query(callback_query_id, "Фильтры")
             return
         if data == "menu_settings":
-            await self.notifier.update_settings_menu(chat_id, message_id, self._menu_settings)
+            await self.notifier.update_settings_menu(
+                chat_id, message_id, self._menu_settings, self._owner_targets
+            )
             await self.notifier.answer_callback_query(callback_query_id, "Настройки")
             return
         if data == "menu_account":
@@ -527,16 +581,6 @@ class GiftMonitor:
             await self.notifier.send_account_menu(False, None, chat_id=chat_id)
             await self.notifier.answer_callback_query(callback_query_id, "Выход выполнен")
             return
-        if data == "edit_owner_template":
-            self._pending_edit = PendingEdit("owner_template", menu_message_id=message_id)
-            await self.notifier.send_text(
-                "Отправь новый шаблон сообщения владельцу. "
-                "Плейсхолдеры: {title}, {number}, {model}, {backdrop}, {price}, {link}\n"
-                "Для отмены: /cancel",
-                chat_id=chat_id,
-            )
-            await self.notifier.answer_callback_query(callback_query_id, "Жду шаблон")
-            return
         if data == "edit_api_key":
             self._pending_edit = PendingEdit("api_key", menu_message_id=message_id)
             await self.notifier.send_text(
@@ -544,6 +588,71 @@ class GiftMonitor:
                 chat_id=chat_id,
             )
             await self.notifier.answer_callback_query(callback_query_id, "Жду ключ")
+            return
+        if data == "edit_owner_templates":
+            await self.notifier.send_templates_menu(
+                self._menu_settings, chat_id=chat_id
+            )
+            await self.notifier.answer_callback_query(callback_query_id, "Шаблоны")
+            return
+        if data == "add_owner_template":
+            self._pending_edit = PendingEdit(
+                "owner_template_add", menu_message_id=message_id
+            )
+            await self.notifier.send_text(
+                "Отправь текст нового шаблона сообщения владельцу. "
+                "Плейсхолдеры: {title}, {number}, {model}, {backdrop}, {price}, {link}\n"
+                "Максимум "
+                + str(MenuSettings.MAX_OWNER_TEMPLATES)
+                + " шаблонов.\nДля отмены: /cancel",
+                chat_id=chat_id,
+            )
+            await self.notifier.answer_callback_query(callback_query_id, "Жду шаблон")
+            return
+        if data.startswith("edit_owner_template_"):
+            suffix = data[len("edit_owner_template_") :]
+            if not suffix.isdigit():
+                await self.notifier.answer_callback_query(
+                    callback_query_id, "Неверный номер шаблона"
+                )
+                return
+            self._pending_edit = PendingEdit(
+                "owner_template_edit",
+                menu_message_id=message_id,
+                index=int(suffix),
+            )
+            await self.notifier.send_text(
+                "Отправь новый текст шаблона №" + str(int(suffix) + 1) + ". "
+                "Плейсхолдеры: {title}, {number}, {model}, {backdrop}, {price}, {link}\n"
+                "Для отмены: /cancel",
+                chat_id=chat_id,
+            )
+            await self.notifier.answer_callback_query(callback_query_id, "Жду шаблон")
+            return
+        if data.startswith("delete_owner_template_"):
+            suffix = data[len("delete_owner_template_") :]
+            index = int(suffix) if suffix.isdigit() else None
+            templates = self._menu_settings.owner_message_templates
+            if index is not None and 0 <= index < len(templates):
+                if len(templates) <= 1:
+                    await self.notifier.answer_callback_query(
+                        callback_query_id, "Нельзя удалить последний шаблон"
+                    )
+                    return
+                self._menu_settings = self._with_menu_settings(
+                    owner_message_templates=templates[:index] + templates[index + 1 :]
+                )
+                self._save_menu_settings()
+                await self.notifier.update_templates_menu(
+                    chat_id, message_id, self._menu_settings
+                )
+                await self.notifier.answer_callback_query(
+                    callback_query_id, "Шаблон удалён"
+                )
+            else:
+                await self.notifier.answer_callback_query(
+                    callback_query_id, "Нет такого шаблона"
+                )
             return
         if data == "edit_api_url":
             self._pending_edit = PendingEdit("api_url", menu_message_id=message_id)
@@ -563,7 +672,9 @@ class GiftMonitor:
                 except Exception as exc:
                     message = f"Ошибка: {exc}"
             await self.notifier.answer_callback_query(callback_query_id, message)
-            await self.notifier.update_settings_menu(chat_id, message_id, self._menu_settings)
+            await self.notifier.update_settings_menu(
+                chat_id, message_id, self._menu_settings, self._owner_targets
+            )
             return
         if data == "toggle_auto_price":
             self._menu_settings = self._with_menu_settings(
@@ -646,7 +757,7 @@ class GiftMonitor:
 
         if data in {"toggle_send_owner", "toggle_auto_price"}:
             await self.notifier.update_settings_menu(
-                chat_id, message_id, self._menu_settings
+                chat_id, message_id, self._menu_settings, self._owner_targets
             )
         elif self._pending_edit is None and data in {
             "toggle_notifications",
@@ -691,10 +802,6 @@ class GiftMonitor:
                 return
             self._runtime_filters = replace(self._runtime_filters, max_price=price)
             confirmation = "Максимальная цена обновлена."
-        elif pending_edit.kind == "owner_template":
-            self._menu_settings = self._with_menu_settings(owner_message_template=normalized)
-            self._save_menu_settings()
-            confirmation = "Шаблон обновлён."
         elif pending_edit.kind == "api_key":
             self._menu_settings = self._with_menu_settings(satellite_api_key=normalized)
             self._save_menu_settings()
@@ -703,6 +810,46 @@ class GiftMonitor:
             self._menu_settings = self._with_menu_settings(satellite_api_url=normalized)
             self._save_menu_settings()
             confirmation = "URL сохранён."
+        elif pending_edit.kind == "owner_template_add":
+            templates = self._menu_settings.owner_message_templates
+            if not normalized:
+                await self.notifier.send_text(
+                    "❌ Шаблон пустой. Отмена.", chat_id=chat_id
+                )
+                return
+            if len(templates) >= MenuSettings.MAX_OWNER_TEMPLATES:
+                await self.notifier.send_text(
+                    "❌ Максимум "
+                    + str(MenuSettings.MAX_OWNER_TEMPLATES)
+                    + " шаблонов. Отмена.",
+                    chat_id=chat_id,
+                )
+                return
+            self._menu_settings = self._with_menu_settings(
+                owner_message_templates=templates + (normalized,)
+            )
+            self._save_menu_settings()
+            confirmation = "Шаблон добавлен."
+        elif pending_edit.kind == "owner_template_edit":
+            templates = self._menu_settings.owner_message_templates
+            index = pending_edit.index
+            if not normalized:
+                await self.notifier.send_text(
+                    "❌ Шаблон пустой. Отмена.", chat_id=chat_id
+                )
+                return
+            if index is None or not (0 <= index < len(templates)):
+                await self.notifier.send_text(
+                    "❌ Нет такого шаблона. Отмена.", chat_id=chat_id
+                )
+                return
+            updated = list(templates)
+            updated[index] = normalized
+            self._menu_settings = self._with_menu_settings(
+                owner_message_templates=tuple(updated)
+            )
+            self._save_menu_settings()
+            confirmation = "Шаблон обновлён."
         else:
             confirmation = (
                 "Фильтр по фону обновлён."
@@ -723,17 +870,28 @@ class GiftMonitor:
         self._save_runtime_filters()
         await self.notifier.send_text(confirmation, chat_id=chat_id)
         if pending_edit.kind in {
-            "owner_template",
+            "owner_template_add",
+            "owner_template_edit",
+        }:
+            if pending_edit.menu_message_id is not None:
+                await self.notifier.update_templates_menu(
+                    chat_id, pending_edit.menu_message_id, self._menu_settings
+                )
+            else:
+                await self.notifier.send_templates_menu(
+                    self._menu_settings, chat_id=chat_id
+                )
+        elif pending_edit.kind in {
             "api_key",
             "api_url",
         }:
             if pending_edit.menu_message_id is not None:
                 await self.notifier.update_settings_menu(
-                    chat_id, pending_edit.menu_message_id, self._menu_settings
+                    chat_id, pending_edit.menu_message_id, self._menu_settings, self._owner_targets
                 )
             else:
                 await self.notifier.send_settings_menu(
-                    self._menu_settings, chat_id=chat_id
+                    self._menu_settings, self._owner_targets, chat_id=chat_id
                 )
         elif pending_edit.menu_message_id is not None:
             await self.notifier.update_filter_menu(

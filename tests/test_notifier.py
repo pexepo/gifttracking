@@ -275,11 +275,27 @@ class KeyboardTests(unittest.TestCase):
         settings = MenuSettings()
         keyboard = BotNotifier.settings_menu_keyboard(settings)
         labels = [button["text"] for row in keyboard["inline_keyboard"] for button in row]
-        self.assertIn("✏️ Шаблон сообщения", labels)
+        self.assertIn("✏️ Шаблоны сообщений", labels)
         self.assertIn("🔑 API-ключ", labels)
         self.assertIn("⚠️ Проверить ключ", labels)
         self.assertIn("✅ Авто-цена", labels)
-        self.assertIn("✅ Отправка владельцу", labels)
+        self.assertIn("⛔️ Отправка владельцу", labels)
+
+    def test_templates_menu_keyboard(self) -> None:
+        settings = MenuSettings(
+            owner_message_templates=("Шаблон один", "Шаблон два")
+        )
+        keyboard = BotNotifier.templates_menu_keyboard(settings)
+        data = [
+            button["callback_data"]
+            for row in keyboard["inline_keyboard"]
+            for button in row
+        ]
+        self.assertIn("edit_owner_template_0", data)
+        self.assertIn("delete_owner_template_1", data)
+        self.assertIn("add_owner_template", data)
+        self.assertIn("menu_settings", data)
+        self.assertNotIn("edit_owner_template", data)
 
     def test_account_menu_keyboard(self) -> None:
         keyboard = BotNotifier.account_menu_keyboard(True)
@@ -289,9 +305,30 @@ class KeyboardTests(unittest.TestCase):
 
 class MenuTextTests(unittest.TestCase):
     def test_settings_menu_text_shows_template(self) -> None:
-        settings = MenuSettings(owner_message_template="Куплю {title}")
+        settings = MenuSettings(owner_message_templates=("Куплю {title}",))
         text = BotNotifier._settings_menu_text(settings)
         self.assertIn("Куплю {title}", text)
+        self.assertIn("Шаблонов владельцу: <b>1</b>", text)
+
+    def test_settings_menu_text_shows_owner_targets(self) -> None:
+        from gift_tracking.notifier import OwnerTargets
+
+        settings = MenuSettings()
+        text = BotNotifier._settings_menu_text(
+            settings, OwnerTargets(min_value_ton=500, min_reputation=0, max_reputation=2, min_gifts=1, max_gifts=5)
+        )
+        self.assertIn("от 500 TON", text)
+        self.assertIn("Репутация в ТГ: <b>0–2</b>", text)
+        self.assertIn("Подарков в профиле: <b>1–5</b>", text)
+
+    def test_templates_menu_text_lists_templates(self) -> None:
+        settings = MenuSettings(
+            owner_message_templates=("Первый шаблон", "Второй")
+        )
+        text = BotNotifier.templates_menu_text(settings)
+        self.assertIn("Первый шаблон", text)
+        self.assertIn("Второй", text)
+        self.assertIn("{price}", text)
 
 
 if __name__ == "__main__":

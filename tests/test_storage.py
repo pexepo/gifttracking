@@ -54,7 +54,10 @@ class StorageTests(unittest.TestCase):
             storage = Storage(Path(directory) / "state.sqlite3")
             self.assertIsNone(storage.load_menu_settings())
             settings = MenuSettings(
-                owner_message_template="Куплю {title} за {price}",
+                owner_message_templates=(
+                    "Куплю {title} за {price}",
+                    "Интересует {title} #{number}",
+                ),
                 satellite_api_key="k",
                 satellite_api_url="https://api.example.com",
                 auto_price_enabled=False,

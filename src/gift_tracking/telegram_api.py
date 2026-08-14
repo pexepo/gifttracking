@@ -7,7 +7,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from telethon import TelegramClient, errors, types
-from telethon.tl.functions import payments
+from telethon.tl.functions import payments, users as users_functions
+from telethon.tl.types import InputUser
 
 from .models import Attribute, Collection, GiftEvent
 
@@ -75,6 +76,7 @@ class GiftTelegramApi:
     def __init__(self, api_id: int, api_hash: str, session: str) -> None:
         self.client = TelegramClient(session, api_id, api_hash)
         self._known_users: dict[int, Any] = {}
+        self._profile_cache: dict[int, tuple[int | None, int | None]] = {}
 
     async def connect(self) -> None:
         await self.client.connect()
@@ -110,7 +112,64 @@ class GiftTelegramApi:
         entity = self._known_users.get(user_id)
         if entity is None:
             raise ValueError(f"Нет данных о владельце {user_id}")
-        await self.client.send_message(entity, text)
+        for attempt in (1, 2):
+            try:
+                await self.client.send_message(entity, text)
+                return
+            except errors.FloodWaitError as exc:
+                wait_for = min(max(1, exc.seconds), 60)
+                LOGGER.warning(
+                    "FloodWait %s с при отправке владельцу %s, повторю через %s",
+                    exc.seconds,
+                    user_id,
+                    wait_for,
+                )
+                await asyncio.sleep(wait_for)
+            except errors.RPCError as exc:
+                if (
+                    attempt == 2
+                    or "too many requests" not in str(exc).casefold()
+                ):
+                    raise
+                LOGGER.warning(
+                    "Too many requests при отправке владельцу %s, повторю через 30 с",
+                    user_id,
+                )
+                await asyncio.sleep(30)
+        raise errors.RPCError(None, "Too many requests")
+
+    async def get_owner_profile(
+        self, user_id: int
+    ) -> tuple[int | None, int | None]:
+        """Return (stars rating level, collectible gifts count) for the owner.
+
+        A missing rating or count is treated as zero. Returns (None, None)
+        when the profile cannot be fetched at all.
+        """
+        cached = self._profile_cache.get(user_id)
+        if cached is not None:
+            return cached
+        entity = self._known_users.get(user_id)
+        level: int | None = None
+        gifts_count: int | None = None
+        access_hash = getattr(entity, "access_hash", None) if entity is not None else None
+        if access_hash is not None:
+            try:
+                result = await self.invoke(
+                    users_functions.GetFullUserRequest(
+                        InputUser(user_id=user_id, access_hash=access_hash)
+                    )
+                )
+                full_user = getattr(result, "full_user", None)
+                if full_user is not None:
+                    rating = getattr(full_user, "stars_rating", None)
+                    if rating is not None:
+                        level = getattr(rating, "level", None) or 0
+                    gifts_count = getattr(full_user, "stargifts_count", None) or 0
+            except errors.RPCError as exc:
+                LOGGER.warning("Не удалось получить профиль владельца %s: %s", user_id, exc)
+        self._profile_cache[user_id] = (level, gifts_count)
+        return level, gifts_count
 
     async def disconnect(self) -> None:
         await self.client.disconnect()

@@ -91,15 +91,31 @@ class MenuSettingsTests(unittest.TestCase):
         self.assertIn("{title}", MenuSettings.DEFAULT_OWNER_TEMPLATE)
         self.assertIn("{price}", MenuSettings.DEFAULT_OWNER_TEMPLATE)
 
+    def test_defaults(self) -> None:
+        settings = MenuSettings()
+        self.assertEqual(
+            settings.owner_message_templates, (MenuSettings.DEFAULT_OWNER_TEMPLATE,)
+        )
+        self.assertFalse(settings.send_to_owner_enabled)
+
     def test_round_trip(self) -> None:
         settings = MenuSettings(
-            owner_message_template="Куплю {title} #{number} за {price}",
+            owner_message_templates=(
+                "Куплю {title} #{number} за {price}",
+                "Второй шаблон {title} {link}",
+            ),
             satellite_api_key="secret",
             satellite_api_url="https://api.example.com",
             auto_price_enabled=True,
             send_to_owner_enabled=False,
         )
         self.assertEqual(MenuSettings.from_dict(settings.to_dict()), settings)
+
+    def test_from_dict_seeds_from_legacy_single_template(self) -> None:
+        settings = MenuSettings.from_dict(
+            {"owner_message_template": "Куплю {title} за {price}"}
+        )
+        self.assertEqual(settings.owner_message_templates, ("Куплю {title} за {price}",))
 
 
 if __name__ == "__main__":
